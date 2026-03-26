@@ -1,0 +1,125 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  users       User[]
+}
+
+model User {
+  id            String      @id @default(uuid())
+  employeeCode  String      @unique
+  fullName      String
+  email         String      @unique
+  passwordHash  String
+  roleId        String
+  role          Role        @relation(fields: [roleId], references: [id])
+  departmentId  String?
+  department    Department? @relation(fields: [departmentId], references: [id])
+  branchId      String?
+  branch        Branch?     @relation(fields: [branchId], references: [id])
+  devices       Device[]
+  status        String      @default("active")
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  code      String?
+  users     User[]
+  devices   Device[]
+  createdAt DateTime @default(now())
+}
+
+model Branch {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  code      String?
+  city      String?
+  state     String?
+  address   String?
+  users     User[]
+  devices   Device[]
+  createdAt DateTime @default(now())
+}
+
+model Device {
+  id              String         @id @default(uuid())
+  assetId         String         @unique
+  hostname        String
+  serialNumber    String?
+  manufacturer    String?
+  model           String?
+  deviceType      String?        // Laptop, Desktop, Server
+  osName          String?
+  osVersion       String?
+  assignedUserId  String?
+  user            User?          @relation(fields: [assignedUserId], references: [id])
+  departmentId    String?
+  department      Department?    @relation(fields: [departmentId], references: [id])
+  branchId        String?
+  branch          Branch?        @relation(fields: [branchId], references: [id])
+  patchGroupId    String?
+  patchGroup      PatchGroup?    @relation(fields: [patchGroupId], references: [id])
+  lastSeenAt      DateTime?
+  status          String         @default("active") // active, offline, maintenance, retired
+  patchStatus     String         @default("up_to_date") // up_to_date, pending, failed
+  alertStatus     String         @default("secure") // secure, warning, critical
+  complianceScore Int            @default(100)
+  installedApps   InstalledApp[]
+  patchStatuses   PatchDeviceStatus[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model InstalledApp {
+  id          String   @id @default(uuid())
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  name        String
+  version     String?
+  publisher   String?
+  installedAt DateTime?
+}
+
+model PatchGroup {
+  id                String   @id @default(uuid())
+  name              String   @unique
+  description       String?
+  maintenanceWindow String?
+  devices           Device[]
+  jobs              PatchJob[]
+}
+
+model PatchDeviceStatus {
+  id                   String   @id @default(uuid())
+  deviceId             String   @unique
+  device               Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  pendingCount         Int      @default(0)
+  criticalPendingCount Int      @default(0)
+  lastScanAt           DateTime?
+  lastRunAt            DateTime?
+  lastRunStatus        String?
+  rebootRequired       Boolean  @default(false)
+}
+
+model PatchJob {
+  id           String   @id @default(uuid())
+  jobNo        String   @unique
+  patchGroupId String
+  patchGroup   PatchGroup @relation(fields: [patchGroupId], references: [id])
+  status       String   @default("pending") // pending, running, completed, failed
+  scheduledAt  DateTime?
+  finishedAt   DateTime?
+  createdBy    String?
+}
