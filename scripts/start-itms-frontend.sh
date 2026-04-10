@@ -6,6 +6,7 @@ FRONTEND_DIR="$REPO_ROOT/frontend"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-4175}"
 FRONTEND_URL="${FRONTEND_URL:-http://localhost:${FRONTEND_PORT}}"
+FRONTEND_FORCE_RESTART="${FRONTEND_FORCE_RESTART:-0}"
 
 require_command() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -53,8 +54,16 @@ port_in_use() {
 
 if port_in_use; then
 	if frontend_healthy; then
-		echo "Frontend preview already healthy at $FRONTEND_URL"
-		exit 0
+		if [[ "$FRONTEND_FORCE_RESTART" != "1" ]]; then
+			echo "Frontend preview already healthy at $FRONTEND_URL"
+			exit 0
+		fi
+
+		kill_stale_frontend_processes
+		if port_in_use; then
+			echo "Port ${FRONTEND_PORT} is in use by a non-preview process. Stop it or set FRONTEND_PORT to a free port." >&2
+			exit 1
+		fi
 	fi
 
 	kill_stale_frontend_processes

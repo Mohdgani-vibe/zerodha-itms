@@ -1,73 +1,167 @@
-# React + TypeScript + Vite
+# ITMS
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Stack
 
-Currently, two official plugins are available:
+- Frontend: React + TypeScript + Vite
+- Backend: Go + Gin + PostgreSQL
+- API routing: frontend calls `/api/*` through the shared API helper in `frontend/src/lib/api.ts`
+- Live modules: users, assets, devices, patching, alerts, stock, gatepass, chat, announcements, requests
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Port Layout
 
-## React Compiler
+- Frontend UI is served on `http://10.10.21.11:4175`
+- Live backend API is served on `http://10.10.21.11:3013`
+- Secondary local backend instance is available on `http://10.10.21.11:3012`
+- Salt API is served on `http://10.10.21.11:8000`
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+In production, the frontend bundle uses explicit origins from `frontend/.env.production`:
 
-## Expanding the ESLint configuration
+- `VITE_API_ORIGIN=http://10.10.21.11:3013`
+- `VITE_WS_ORIGIN=ws://10.10.21.11:3013`
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+That means all frontend options and routes resolve to the backend on port `3013` instead of inferring a backend port from the browser location.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Development
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+Start backend plus stable frontend together from the repo root:
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+bash scripts/start-itms.sh
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+This command ensures the backend is healthy, rebuilds the frontend if the built assets are stale, and keeps preview pinned to `4175`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Equivalent Make targets from the repo root:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+make start
+make stop
+make restart
+make status
+make smoke-test
+make install-autostart
+make autostart-status
+make autostart-logs
 ```
+
+Stop backend plus stable frontend together:
+
+```bash
+bash scripts/stop-itms.sh
+```
+
+## Keep ITMS Up
+
+To keep the frontend supervised and automatically restarted if it exits, install the user-level systemd service from the repo root:
+
+```bash
+bash scripts/install-itms-autostart.sh
+```
+
+This creates and starts `itms-stack.service` under your user systemd instance. The service:
+
+- runs `scripts/start-itms.sh`
+- ensures the backend is healthy before frontend startup
+- forces the frontend preview process to be restarted under systemd ownership
+- restarts automatically if the frontend preview exits
+
+It also installs `itms-stack-watchdog.timer`, which runs every minute and:
+
+- checks backend health on `:3001`
+- checks frontend health on `:4175`
+- reruns backend recovery if the API is unhealthy
+- restarts `itms-stack.service` if the frontend is unhealthy
+
+Check service status and logs:
+
+```bash
+systemctl --user --no-pager --full status itms-stack.service
+journalctl --user -u itms-stack-watchdog.service -n 100 --no-pager
+journalctl --user -u itms-stack.service -n 100 --no-pager
+```
+
+For persistence across logout and reboot, enable linger for your user:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+You can also ask the installer to attempt that automatically when passwordless `sudo` is available:
+
+```bash
+bash scripts/install-itms-autostart.sh --enable-linger
+```
+
+Install frontend dependencies:
+
+```bash
+cd frontend
+npm install
+```
+
+Build the frontend:
+
+```bash
+cd frontend
+npm run build
+```
+
+Start the frontend preview on the fixed live port:
+
+```bash
+cd frontend
+npm run preview:stable
+```
+
+Build the backend:
+
+```bash
+cd backend
+GOTOOLCHAIN=local go build ./...
+```
+
+Frontend-specific implementation and bundle notes are documented in `frontend/README.md`.
+
+## Docker Setup On This Server
+
+If Docker is not installed yet, use the one-shot Ubuntu installer from the repo root:
+
+```bash
+chmod +x scripts/install-docker-and-start-itms.sh
+./scripts/install-docker-and-start-itms.sh
+```
+
+For detached startup:
+
+```bash
+./scripts/install-docker-and-start-itms.sh --detach
+```
+
+After the stack starts, verify service and API health:
+
+```bash
+chmod +x scripts/verify-itms-stack.sh
+./scripts/verify-itms-stack.sh --sudo
+```
+
+Then run the API smoke test:
+
+```bash
+chmod +x scripts/smoke-test-itms-api.sh
+./scripts/smoke-test-itms-api.sh
+```
+
+## Direct Compose Run
+
+```bash
+cd backend
+cp .env.example .env
+docker compose up --build
+```
+
+## Backend Notes
+
+- PostgreSQL is the source of truth for persistent data.
+- Docker is used for runtime and service orchestration.
+- Linux systems can push hardware and OS inventory directly to the backend with `scripts/push-system-inventory.py` and `INVENTORY_INGEST_TOKEN`.
+- Backend-specific setup details are documented in `backend/README.md`.
