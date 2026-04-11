@@ -2550,7 +2550,7 @@ func (server *apiServer) upsertAsset(c *gin.Context, create bool) {
 		httpx.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	middleware.TagAudit(c, middleware.AuditMeta{Action: "asset_created", TargetType: "asset", TargetID: c.Param("id"), Detail: input})
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "asset_updated", TargetType: "asset", TargetID: c.Param("id"), Detail: input})
 	httpx.JSON(c, http.StatusOK, gin.H{"ok": true})
 }
 
@@ -2647,6 +2647,19 @@ func (server *apiServer) getAssetHistory(c *gin.Context) {
 	if !server.requireRoles(c, "super_admin", "it_team", "employee") {
 		return
 	}
+	asset, err := server.fetchAsset(c.Param("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "asset not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !server.assetAllowed(c, asset.EntityID, asset.AssignedTo) {
+		httpx.Error(c, http.StatusForbidden, "forbidden")
+		return
+	}
 	rows, err := server.db.Query(`
 		SELECT h.id, COALESCE(u.full_name, ''), h.action, h.detail, h.created_at
 		FROM asset_history h
@@ -2682,6 +2695,10 @@ func (server *apiServer) getAssetAlerts(c *gin.Context) {
 	asset, err := server.fetchAsset(c.Param("id"))
 	if err != nil {
 		httpx.Error(c, http.StatusNotFound, "asset not found")
+		return
+	}
+	if !server.assetAllowed(c, asset.EntityID, asset.AssignedTo) {
+		httpx.Error(c, http.StatusForbidden, "forbidden")
 		return
 	}
 	items, err := server.collectAssetAlerts(c.Request.Context(), asset)
