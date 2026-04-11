@@ -39,57 +39,12 @@ make stop
 make restart
 make status
 make smoke-test
-make install-autostart
-make autostart-status
-make autostart-logs
 ```
 
 Stop backend plus stable frontend together:
 
 ```bash
 bash scripts/stop-itms.sh
-```
-
-## Keep ITMS Up
-
-To keep the frontend supervised and automatically restarted if it exits, install the user-level systemd service from the repo root:
-
-```bash
-bash scripts/install-itms-autostart.sh
-```
-
-This creates and starts `itms-stack.service` under your user systemd instance. The service:
-
-- runs `scripts/start-itms.sh`
-- ensures the backend is healthy before frontend startup
-- forces the frontend preview process to be restarted under systemd ownership
-- restarts automatically if the frontend preview exits
-
-It also installs `itms-stack-watchdog.timer`, which runs every minute and:
-
-- checks backend health on `:3001`
-- checks frontend health on `:4175`
-- reruns backend recovery if the API is unhealthy
-- restarts `itms-stack.service` if the frontend is unhealthy
-
-Check service status and logs:
-
-```bash
-systemctl --user --no-pager --full status itms-stack.service
-journalctl --user -u itms-stack-watchdog.service -n 100 --no-pager
-journalctl --user -u itms-stack.service -n 100 --no-pager
-```
-
-For persistence across logout and reboot, enable linger for your user:
-
-```bash
-sudo loginctl enable-linger $USER
-```
-
-You can also ask the installer to attempt that automatically when passwordless `sudo` is available:
-
-```bash
-bash scripts/install-itms-autostart.sh --enable-linger
 ```
 
 Install frontend dependencies:
