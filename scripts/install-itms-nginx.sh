@@ -12,6 +12,8 @@ BACKEND_UPSTREAM="${BACKEND_UPSTREAM:-127.0.0.1:3001}"
 WWW_ROOT="${WWW_ROOT:-/var/www/itms}"
 AVAILABLE_PATH="/etc/nginx/sites-available/${SITE_NAME}"
 ENABLED_PATH="/etc/nginx/sites-enabled/${SITE_NAME}"
+BUILD_USER="${SUDO_USER:-${USER:-}}"
+BUILD_GROUP="$(id -gn "$BUILD_USER")"
 
 require_command() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -28,6 +30,19 @@ run_privileged() {
 	fi
 }
 
+run_as_build_user() {
+	if [[ -z "$BUILD_USER" ]]; then
+		echo "Unable to determine the non-root user for the frontend build." >&2
+		exit 1
+	fi
+
+	if [[ "$EUID" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+		runuser -u "$BUILD_USER" -- "$@"
+	else
+		"$@"
+	fi
+}
+
 escape_sed_replacement() {
 	printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
 }
@@ -35,6 +50,9 @@ escape_sed_replacement() {
 require_command npm
 require_command node
 require_command sed
+if [[ "$EUID" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+	require_command runuser
+fi
 
 ensure_frontend_dependencies() {
 	if [[ -d "$FRONTEND_DIR/node_modules" ]]; then
@@ -43,7 +61,7 @@ ensure_frontend_dependencies() {
 
 	echo "Frontend dependencies are missing. Installing them in $FRONTEND_DIR..."
 	cd "$FRONTEND_DIR"
-	npm install
+	run_as_build_user npm install
 	cd "$REPO_ROOT"
 }
 
@@ -56,8 +74,11 @@ fi
 
 echo "Building frontend assets..."
 ensure_frontend_dependencies
+	if [[ -d "$FRONTEND_DIST_DIR" ]]; then
+		run_privileged chown -R "$BUILD_USER:$BUILD_GROUP" "$FRONTEND_DIST_DIR"
+	fi
 cd "$FRONTEND_DIR"
-npm run build
+run_as_build_user npm run build
 
 if [[ ! -f "$FRONTEND_DIST_DIR/index.html" ]]; then
 	echo "Expected frontend build output at $FRONTEND_DIST_DIR/index.html" >&2
