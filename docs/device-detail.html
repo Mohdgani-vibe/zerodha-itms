@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ITMS Device Detail</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#ecfeff',
+                100: '#cffafe',
+                500: '#0891b2',
+                600: '#0e7490',
+                700: '#155e75'
+              }
+            },
+            boxShadow: {
+              panel: '0 24px 80px rgba(15, 23, 42, 0.10)'
+            },
+            fontFamily: {
+              display: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+              body: ['"Manrope"', 'ui-sans-serif', 'system-ui', 'sans-serif']
+            }
+          }
+        }
+      };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(8,145,178,0.14),_transparent_36%),linear-gradient(180deg,_#f8fafc_0%,_#e2e8f0_100%)] font-body text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+
+      const SAMPLE_DEVICE = {
+        id: 'device-demo-001',
+        assetId: 'IT-LTP-2041',
+        hostname: 'blr-eng-mbp-14',
+        serialNumber: 'C02ZX8X3LVDQ',
+        manufacturer: 'Apple',
+        model: 'MacBook Pro 14',
+        deviceType: 'Laptop',
+        osName: 'macOS',
+        osVersion: 'Sequoia 15.3',
+        status: 'assigned',
+        patchStatus: 'up_to_date',
+        alertStatus: 'healthy',
+        complianceScore: 96,
+        user: {
+          id: 'user-demo-001',
+          fullName: 'Anika Rao',
+          email: 'anika.rao@example.com',
+          employeeCode: 'ZR8421'
+        },
+        department: { name: 'Engineering' },
+        branch: { name: 'Bangalore HQ' },
+        installedApps: [
+          { id: 'app-1', name: 'Visual Studio Code', version: '1.102.0', publisher: 'Microsoft' },
+          { id: 'app-2', name: 'Slack', version: '4.42.120', publisher: 'Slack Technologies' },
+          { id: 'app-3', name: 'Docker Desktop', version: '4.41.2', publisher: 'Docker Inc.' },
+          { id: 'app-4', name: 'Google Chrome', version: '136.0.7103.114', publisher: 'Google LLC' }
+        ]
+      };
+
+      function cx(...parts) {
+        return parts.filter(Boolean).join(' ');
+      }
+
+      function sentence(value, fallback = 'Unknown') {
+        if (value === null || value === undefined || value === '') {
+          return fallback;
+        }
+        return String(value);
+      }
+
+      function startCase(value) {
+        return sentence(value, '-').replaceAll('_', ' ');
+      }
+
+      function badgeTone(kind, value) {
+        const normalized = String(value || '').toLowerCase();
+        if (kind === 'status') {
+          if (normalized.includes('assigned') || normalized.includes('active')) return 'bg-emerald-100 text-emerald-700 ring-emerald-200';
+          if (normalized.includes('repair') || normalized.includes('pending')) return 'bg-amber-100 text-amber-700 ring-amber-200';
+          return 'bg-slate-200 text-slate-700 ring-slate-300';
+        }
+        if (kind === 'patch') {
+          if (normalized.includes('up')) return 'bg-brand-100 text-brand-700 ring-brand-200';
+          if (normalized.includes('overdue') || normalized.includes('missing')) return 'bg-rose-100 text-rose-700 ring-rose-200';
+          return 'bg-amber-100 text-amber-700 ring-amber-200';
+        }
+        if (kind === 'alert') {
+          if (normalized.includes('healthy') || normalized.includes('normal')) return 'bg-emerald-100 text-emerald-700 ring-emerald-200';
+          if (normalized.includes('critical')) return 'bg-rose-100 text-rose-700 ring-rose-200';
+          return 'bg-amber-100 text-amber-700 ring-amber-200';
+        }
+        return 'bg-slate-200 text-slate-700 ring-slate-300';
+      }
+
+      function StatCard({ label, value, tone = 'slate' }) {
+        const tones = {
+          slate: 'from-slate-50 to-white border-slate-200',
+          brand: 'from-cyan-50 to-white border-cyan-200',
+          emerald: 'from-emerald-50 to-white border-emerald-200',
+          rose: 'from-rose-50 to-white border-rose-200'
+        };
+
+        return (
+          <div className={cx('rounded-3xl border bg-gradient-to-br p-5 shadow-sm', tones[tone] || tones.slate)}>
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.2em] text-slate-500">{label}</div>
+            <div className="mt-3 text-2xl font-extrabold text-slate-950">{value}</div>
+          </div>
+        );
+      }
+
+      function DataPair({ label, value }) {
+        return (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/90 p-4">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-slate-400">{label}</div>
+            <div className="mt-2 text-sm font-semibold text-slate-800">{sentence(value)}</div>
+          </div>
+        );
+      }
+
+      function App() {
+        const params = useMemo(() => new URLSearchParams(window.location.search), []);
+        const [deviceId, setDeviceId] = useState(params.get('id') || '');
+        const [apiBase, setApiBase] = useState(params.get('apiBase') || window.location.origin.replace(/\/$/, ''));
+        const [token, setToken] = useState(params.get('token') || window.localStorage.getItem('itms_token') || '');
+        const [device, setDevice] = useState(deviceId ? null : SAMPLE_DEVICE);
+        const [loading, setLoading] = useState(Boolean(deviceId));
+        const [error, setError] = useState('');
+
+        const installedApps = useMemo(() => device?.installedApps || [], [device]);
+
+        async function loadDevice(id) {
+          if (!id) {
+            setDevice(SAMPLE_DEVICE);
+            setError('');
+            setLoading(false);
+            return;
+          }
+
+          try {
+            setLoading(true);
+            setError('');
+            const headers = token ? { Authorization: `Bearer ${token}` } : {};
+            const response = await fetch(`${apiBase}/api/devices/${encodeURIComponent(id)}`, { headers });
+            const payload = await response.json().catch(() => null);
+
+            if (!response.ok) {
+              throw new Error(payload && payload.error ? payload.error : 'Failed to load device');
+            }
+
+            setDevice(payload);
+          } catch (requestError) {
+            setDevice(SAMPLE_DEVICE);
+            setError(requestError instanceof Error ? `${requestError.message}. Showing sample data instead.` : 'Failed to load device. Showing sample data instead.');
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        useEffect(() => {
+          loadDevice(deviceId);
+        }, []);
+
+        function handleLoad(event) {
+          event.preventDefault();
+          const next = new URL(window.location.href);
+          if (deviceId) next.searchParams.set('id', deviceId); else next.searchParams.delete('id');
+          if (apiBase) next.searchParams.set('apiBase', apiBase); else next.searchParams.delete('apiBase');
+          if (token) next.searchParams.set('token', token); else next.searchParams.delete('token');
+          window.history.replaceState({}, '', next.toString());
+          loadDevice(deviceId);
+        }
+
+        if (loading) {
+          return (
+            <main className="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-6 py-16">
+              <div className="rounded-[2rem] border border-slate-200 bg-white/80 px-8 py-6 text-sm font-semibold text-slate-500 shadow-panel backdrop-blur">
+                Loading device details...
+              </div>
+            </main>
+          );
+        }
+
+        return (
+          <main className="mx-auto max-w-7xl px-6 py-10 lg:px-8">
+            <section className="relative overflow-hidden rounded-[2rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur lg:p-8">
+              <div className="absolute inset-x-0 top-0 h-40 bg-[linear-gradient(120deg,rgba(8,145,178,0.14),rgba(14,116,144,0.02),rgba(15,23,42,0))]" />
+              <div className="relative grid gap-8 xl:grid-cols-[1.35fr_0.95fr]">
+                <div>
+                  <div className="inline-flex items-center rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-[11px] font-extrabold uppercase tracking-[0.24em] text-brand-700">
+                    ITMS Standalone Device Profile
+                  </div>
+                  <h1 className="mt-5 font-display text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
+                    {sentence(device?.hostname, 'Unknown device')}
+                  </h1>
+                  <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 sm:text-base">
+                    Standalone React 18 device detail page. Pass <span className="font-bold text-slate-900">?id=DEVICE_ID</span> to fetch live data from the API, or open it as-is to preview the embedded sample state.
+                  </p>
+
+                  <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 font-semibold">{sentence(device?.assetId, 'No asset id')}</span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 font-semibold">{sentence(device?.deviceType, 'Unknown type')}</span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 font-semibold">{sentence(device?.osName, 'Unknown OS')} {sentence(device?.osVersion, '')}</span>
+                  </div>
+
+                  {error ? (
+                    <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                      {error}
+                    </div>
+                  ) : null}
+                </div>
+
+                <form onSubmit={handleLoad} className="relative rounded-[1.75rem] border border-slate-200 bg-slate-950 p-5 text-white shadow-2xl">
+                  <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-cyan-300">Live Fetch Controls</div>
+                  <div className="mt-5 space-y-4">
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Device Id</span>
+                      <input value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="example: device-demo-001" className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-400" />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-400">API Base</span>
+                      <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} placeholder="http://localhost:3001" className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-400" />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Bearer Token</span>
+                      <textarea value={token} onChange={(event) => setToken(event.target.value)} rows="4" placeholder="Optional. Falls back to localStorage.itms_token." className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-400" />
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      <button type="submit" className="rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-extrabold text-slate-950 transition hover:bg-cyan-300">
+                        Load Device
+                      </button>
+                      <button type="button" onClick={() => { setDeviceId(''); setDevice(SAMPLE_DEVICE); setError(''); setLoading(false); }} className="rounded-2xl border border-slate-700 px-5 py-3 text-sm font-extrabold text-white transition hover:bg-slate-800">
+                        Use Sample Data
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Device Status" value={startCase(device?.status)} tone="emerald" />
+              <StatCard label="Patch Status" value={startCase(device?.patchStatus)} tone="brand" />
+              <StatCard label="Alert State" value={startCase(device?.alertStatus)} tone="rose" />
+              <StatCard label="Compliance" value={`${Number(device?.complianceScore || 0)}%`} tone="slate" />
+            </section>
+
+            <section className="mt-8 grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
+              <div className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-panel backdrop-blur lg:p-7">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Overview</div>
+                    <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-slate-950">Asset profile</h2>
+                  </div>
+                  <div className={cx('rounded-full px-3 py-1.5 text-xs font-extrabold ring-1', badgeTone('status', device?.status))}>
+                    {startCase(device?.status)}
+                  </div>
+                </div>
+
+                <div className="mt-6 grid gap-4 md:grid-cols-2">
+                  <DataPair label="Manufacturer" value={device?.manufacturer} />
+                  <DataPair label="Model" value={device?.model} />
+                  <DataPair label="Serial Number" value={device?.serialNumber} />
+                  <DataPair label="Operating System" value={`${sentence(device?.osName)} ${sentence(device?.osVersion, '')}`.trim()} />
+                  <DataPair label="Assigned User" value={device?.user?.fullName || 'Unassigned'} />
+                  <DataPair label="Employee Code" value={device?.user?.employeeCode || '-'} />
+                  <DataPair label="Email" value={device?.user?.email || '-'} />
+                  <DataPair label="Department" value={device?.department?.name || 'Unassigned'} />
+                  <DataPair label="Branch" value={device?.branch?.name || 'Unassigned'} />
+                  <DataPair label="Device Type" value={device?.deviceType} />
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-panel backdrop-blur">
+                  <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Health Signals</div>
+                  <div className="mt-5 space-y-4">
+                    <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <span className="text-sm font-bold text-slate-700">Patch posture</span>
+                      <span className={cx('rounded-full px-3 py-1 text-xs font-extrabold ring-1', badgeTone('patch', device?.patchStatus))}>{startCase(device?.patchStatus)}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <span className="text-sm font-bold text-slate-700">Alert posture</span>
+                      <span className={cx('rounded-full px-3 py-1 text-xs font-extrabold ring-1', badgeTone('alert', device?.alertStatus))}>{startCase(device?.alertStatus)}</span>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                      <div className="flex items-end justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-bold text-slate-700">Compliance score</div>
+                          <div className="mt-1 text-3xl font-extrabold text-slate-950">{Number(device?.complianceScore || 0)}%</div>
+                        </div>
+                        <div className="h-16 w-16 rounded-full bg-[conic-gradient(#0891b2_calc(var(--score)*1%),#e2e8f0_0)] p-2" style={{ '--score': Number(device?.complianceScore || 0) }}>
+                          <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-xs font-extrabold text-slate-700">OK</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-panel backdrop-blur">
+                  <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Installed Applications</div>
+                  <div className="mt-4 max-h-[28rem] space-y-3 overflow-y-auto pr-1">
+                    {installedApps.length ? installedApps.map((application) => (
+                      <div key={application.id || application.name} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div className="text-sm font-extrabold text-slate-900">{sentence(application.name)}</div>
+                        <div className="mt-1 text-xs font-medium text-slate-500">{sentence(application.publisher, 'Unknown publisher')} | {sentence(application.version, 'Unknown version')}</div>
+                      </div>
+                    )) : (
+                      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm font-semibold text-slate-500">
+                        No installed application data is available for this device.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </main>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>

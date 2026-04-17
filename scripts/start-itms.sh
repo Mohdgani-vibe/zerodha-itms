@@ -19,6 +19,17 @@ require_command node
 require_command ss
 require_command ps
 
+ensure_frontend_dependencies() {
+	if [[ -d "$FRONTEND_DIR/node_modules" ]]; then
+		return 0
+	fi
+
+	echo "Frontend dependencies are missing. Installing them in $FRONTEND_DIR..."
+	cd "$FRONTEND_DIR"
+	npm install
+	cd "$REPO_ROOT"
+}
+
 latest_frontend_source_epoch() {
 	{
 		stat -c '%Y' \
@@ -35,12 +46,12 @@ latest_frontend_source_epoch() {
 }
 
 latest_frontend_build_epoch() {
-	if [[ ! -d "$REPO_ROOT/dist" ]]; then
+	if [[ ! -d "$FRONTEND_DIR/dist" ]]; then
 		echo 0
 		return 0
 	fi
 
-	find "$REPO_ROOT/dist" -type f -printf '%T@\n' 2>/dev/null | awk 'BEGIN { max = 0 } { if ($1 > max) max = $1 } END { printf "%.0f\n", max }'
+	find "$FRONTEND_DIR/dist" -type f -printf '%T@\n' 2>/dev/null | awk 'BEGIN { max = 0 } { if ($1 > max) max = $1 } END { printf "%.0f\n", max }'
 }
 
 frontend_build_stale() {
@@ -76,6 +87,8 @@ kill_frontend_preview_processes() {
 }
 
 bash "$BACKEND_START_SCRIPT"
+
+ensure_frontend_dependencies
 
 rebuilt_frontend=0
 if frontend_build_stale; then

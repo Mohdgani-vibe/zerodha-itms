@@ -20,6 +20,16 @@ require_command npm
 require_command ss
 require_command ps
 
+ensure_frontend_dependencies() {
+	if [[ -d "$FRONTEND_DIR/node_modules" ]]; then
+		return 0
+	fi
+
+	echo "Frontend dependencies are missing. Installing them in $FRONTEND_DIR..."
+	cd "$FRONTEND_DIR"
+	npm install
+}
+
 frontend_healthy() {
 	curl -fsS -I "$FRONTEND_URL" >/dev/null 2>&1
 }
@@ -65,4 +75,5 @@ if port_in_use; then
 fi
 
 cd "$FRONTEND_DIR"
+ensure_frontend_dependencies
 exec node node_modules/vite/bin/vite.js preview --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort

@@ -1,0 +1,3 @@
+Username,Email id,Employee id,department,password,role,entity_code,location,is_active
+,employee1@zerodha.com,EMP1001,,ChangeMe123!,employee,,,active
+,employee2@zerodha.com,EMP1002,,ChangeMe123!,employee,,,active

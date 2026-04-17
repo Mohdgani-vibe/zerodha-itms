@@ -1,0 +1,5 @@
+Username,Email id,Employee id,department,password,role,entity_code,location,is_active
+,employee.alpha@zerodha.com,EMP2001,,ChangeMe123!,employee,,,active
+,employee.beta@zerodha.com,EMP2002,,ChangeMe123!,employee,,,active
+Ananya Rao,ananya.rao@zerodha.com,EMP2003,Operations,ChangeMe123!,employee,ZBL,"ZBL Head Office, Bangalore",active
+Rahul Nair,rahul.nair@zerodha.com,EMP2004,Finance,ChangeMe123!,employee,ZBL,"ZBL Support Office, Bangalore",active

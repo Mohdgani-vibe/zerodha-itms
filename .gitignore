@@ -10,7 +10,11 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.tmp/
+.vite/
 *.local
+*.pyc
+__pycache__/
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +26,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+backend/*.db
+backend/.env
+backend/bin/
+backend/data/*.db
+backend/prisma/*.db
+backend/reset_instance_data
+backend/sync_default_admin_password
+backend/server
+scripts/__pycache__/

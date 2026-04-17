@@ -1,0 +1,7 @@
+Username,Email id,Employee id,department,password,role,entity_code,location,is_active
+,new.employee@zerodha.com,EMP1000,,ChangeMe123!,employee,,,active
+Ananya Rao,ananya.rao@zerodha.com,EMP1001,Operations,ChangeMe123!,employee,ZBL,"ZBL Head Office, Bangalore",active
+Rahul Nair,rahul.nair@zerodha.com,EMP1002,"Finance & Accounts",ChangeMe123!,employee,ZBL,"ZBL Head Office, Bangalore",active
+Priya Sharma,priya.sharma@zerodha.com,EMP1003,"People Operations",ChangeMe123!,employee,ZBL,"ZBL Support Office, Bangalore",active
+Karthik Iyer,karthik.iyer@zerodha.com,EMP1004,Engineering,ChangeMe123!,employee,ZBL,"ZBL Head Office, Bangalore",active
+Nisha Verma,nisha.verma@zerodha.com,EMP1005,Compliance,ChangeMe123!,employee,ZBL,"ZBL Support Office, Belgaum",active

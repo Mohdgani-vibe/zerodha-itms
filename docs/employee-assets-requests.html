@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ITMS Employee Assets And Requests</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#fff7ed',
+                100: '#ffedd5',
+                500: '#ea580c',
+                600: '#c2410c',
+                700: '#9a3412'
+              }
+            },
+            boxShadow: {
+              panel: '0 24px 80px rgba(15, 23, 42, 0.10)'
+            },
+            fontFamily: {
+              display: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+              body: ['"Manrope"', 'ui-sans-serif', 'system-ui', 'sans-serif']
+            }
+          }
+        }
+      };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(234,88,12,0.16),_transparent_34%),linear-gradient(180deg,_#fffaf5_0%,_#fed7aa_100%)] font-body text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+
+      const REQUEST_TYPES = [
+        'Laptop replacement',
+        'Software install',
+        'Hardware replacement',
+        'Peripheral request',
+        'Access request',
+        'Other'
+      ];
+
+      const SAMPLE_ASSETS = {
+        devices: [
+          {
+            id: 'device-demo-001',
+            assetTag: 'IT-LTP-2041',
+            hostname: 'blr-eng-mbp-14',
+            serialNumber: 'C02ZX8X3LVDQ',
+            specs: 'M3 Pro / 36 GB / 1 TB',
+            status: 'assigned',
+            warrantyExpiresAt: '2027-08-19T00:00:00Z',
+            warrantyBadge: 'healthy'
+          },
+          {
+            id: 'device-demo-002',
+            assetTag: 'IT-MON-7781',
+            hostname: 'dell-u2723qe-01',
+            serialNumber: 'CN0Q8L7R9',
+            specs: '27 inch 4K USB-C Monitor',
+            status: 'assigned',
+            warrantyExpiresAt: '2026-05-12T00:00:00Z',
+            warrantyBadge: '30_days'
+          }
+        ],
+        items: [
+          {
+            id: 'item-demo-001',
+            itemCode: 'STK-HDP-221',
+            name: 'USB-C Dock',
+            serialNumber: 'DK44P19',
+            specs: 'Dual Display Dock',
+            status: 'issued',
+            warrantyExpiresAt: '2026-04-22T00:00:00Z',
+            warrantyBadge: '15_days'
+          }
+        ]
+      };
+
+      const SAMPLE_REQUESTS = [
+        {
+          id: 'req-demo-001',
+          type: 'Software install',
+          title: 'Install JetBrains Toolbox',
+          description: 'Need JetBrains Toolbox to manage IntelliJ and DataGrip updates.',
+          status: 'in_progress',
+          notes: 'IT is validating the license seat and packaging workflow.',
+          createdAt: '2026-03-26T09:15:00Z',
+          updatedAt: '2026-03-28T12:40:00Z',
+          comments: [
+            { id: 'c-1', author: 'Ritika Sharma', note: 'Requested business justification received.', createdAt: '2026-03-27T08:15:00Z' },
+            { id: 'c-2', author: 'Anika Rao', note: 'Needed for Java service debugging and DB query work.', createdAt: '2026-03-27T08:30:00Z' }
+          ]
+        },
+        {
+          id: 'req-demo-002',
+          type: 'Peripheral request',
+          title: 'Replace damaged charger',
+          description: 'Current USB-C charger overheats under load.',
+          status: 'resolved',
+          notes: 'Replacement charger issued from Bangalore stock.',
+          createdAt: '2026-03-21T10:20:00Z',
+          updatedAt: '2026-03-22T14:55:00Z',
+          comments: []
+        }
+      ];
+
+      function cx() {
+        return Array.from(arguments).filter(Boolean).join(' ');
+      }
+
+      function sentence(value, fallback = 'Unknown') {
+        if (value === null || value === undefined || value === '') {
+          return fallback;
+        }
+        return String(value);
+      }
+
+      function pretty(value) {
+        return sentence(value, '-').replaceAll('_', ' ');
+      }
+
+      function warrantyTone(value) {
+        if (value === '7_days' || value === '15_days') return 'bg-rose-100 text-rose-700 ring-rose-200';
+        if (value === '30_days') return 'bg-amber-100 text-amber-700 ring-amber-200';
+        return 'bg-emerald-100 text-emerald-700 ring-emerald-200';
+      }
+
+      function requestTone(value) {
+        if (value === 'resolved') return 'bg-emerald-100 text-emerald-700 ring-emerald-200';
+        if (value === 'rejected') return 'bg-rose-100 text-rose-700 ring-rose-200';
+        if (value === 'in_progress') return 'bg-amber-100 text-amber-700 ring-amber-200';
+        return 'bg-slate-200 text-slate-700 ring-slate-300';
+      }
+
+      function InfoCard({ label, value, subtext }) {
+        return (
+          <div className="rounded-3xl border border-white/70 bg-white/80 p-5 shadow-panel backdrop-blur">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.22em] text-slate-400">{label}</div>
+            <div className="mt-3 text-2xl font-extrabold text-slate-950">{value}</div>
+            {subtext ? <div className="mt-1 text-sm font-medium text-slate-500">{subtext}</div> : null}
+          </div>
+        );
+      }
+
+      function App() {
+        const params = useMemo(() => new URLSearchParams(window.location.search), []);
+        const [apiBase, setApiBase] = useState(params.get('apiBase') || window.location.origin.replace(/\/$/, ''));
+        const [token, setToken] = useState(params.get('token') || window.localStorage.getItem('itms_token') || '');
+        const [assets, setAssets] = useState(SAMPLE_ASSETS);
+        const [requests, setRequests] = useState(SAMPLE_REQUESTS);
+        const [loading, setLoading] = useState(true);
+        const [submitting, setSubmitting] = useState(false);
+        const [error, setError] = useState('');
+        const [form, setForm] = useState({ type: REQUEST_TYPES[0], title: '', description: '' });
+
+        const totalAssets = useMemo(() => assets.devices.length + assets.items.length, [assets]);
+
+        async function fetchJson(path, init) {
+          const headers = new Headers(init && init.headers ? init.headers : {});
+          if (token) {
+            headers.set('Authorization', `Bearer ${token}`);
+          }
+          if (init && init.body && !headers.has('Content-Type')) {
+            headers.set('Content-Type', 'application/json');
+          }
+
+          const response = await fetch(`${apiBase}${path}`, { ...(init || {}), headers });
+          const payload = await response.json().catch(() => null);
+          if (!response.ok) {
+            throw new Error(payload && payload.error ? payload.error : 'Request failed');
+          }
+          return payload;
+        }
+
+        async function loadAll() {
+          try {
+            setLoading(true);
+            setError('');
+            const [assetData, requestData] = await Promise.all([
+              fetchJson('/api/me/assets'),
+              fetchJson('/api/me/requests')
+            ]);
+            setAssets(assetData);
+            setRequests(requestData);
+          } catch (requestError) {
+            setAssets(SAMPLE_ASSETS);
+            setRequests(SAMPLE_REQUESTS);
+            setError(requestError instanceof Error ? `${requestError.message}. Showing sample data instead.` : 'Failed to load employee data. Showing sample data instead.');
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        useEffect(() => {
+          loadAll();
+        }, []);
+
+        function persistQueryState() {
+          const next = new URL(window.location.href);
+          if (apiBase) next.searchParams.set('apiBase', apiBase); else next.searchParams.delete('apiBase');
+          if (token) next.searchParams.set('token', token); else next.searchParams.delete('token');
+          window.history.replaceState({}, '', next.toString());
+        }
+
+        async function handleReload(event) {
+          event.preventDefault();
+          persistQueryState();
+          await loadAll();
+        }
+
+        async function handleSubmit(event) {
+          event.preventDefault();
+          if (!form.type || !form.title.trim()) {
+            return;
+          }
+
+          try {
+            setSubmitting(true);
+            setError('');
+            persistQueryState();
+            await fetchJson('/api/me/requests', {
+              method: 'POST',
+              body: JSON.stringify({
+                type: form.type,
+                title: form.title.trim(),
+                description: form.description.trim()
+              })
+            });
+            setForm({ type: REQUEST_TYPES[0], title: '', description: '' });
+            await loadAll();
+          } catch (requestError) {
+            setError(requestError instanceof Error ? requestError.message : 'Failed to create request');
+          } finally {
+            setSubmitting(false);
+          }
+        }
+
+        return (
+          <main className="mx-auto max-w-7xl px-6 py-10 lg:px-8">
+            <section className="relative overflow-hidden rounded-[2rem] border border-white/70 bg-white/80 p-6 shadow-panel backdrop-blur lg:p-8">
+              <div className="absolute inset-x-0 top-0 h-40 bg-[linear-gradient(120deg,rgba(234,88,12,0.16),rgba(194,65,12,0.03),rgba(15,23,42,0))]" />
+              <div className="relative grid gap-8 xl:grid-cols-[1.2fr_0.8fr]">
+                <div>
+                  <div className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-[11px] font-extrabold uppercase tracking-[0.24em] text-brand-700">
+                    ITMS Standalone Employee Portal
+                  </div>
+                  <h1 className="mt-5 font-display text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
+                    My Assets And Requests
+                  </h1>
+                  <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 sm:text-base">
+                    Self-contained React 18 page for employee-issued assets and request tracking. It reads live data from <span className="font-bold text-slate-900">/api/me/assets</span> and <span className="font-bold text-slate-900">/api/me/requests</span>, and can also submit new requests.
+                  </p>
+
+                  <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                    <InfoCard label="Assigned Assets" value={String(totalAssets)} subtext={`${assets.devices.length} devices • ${assets.items.length} stock items`} />
+                    <InfoCard label="Open Requests" value={String(requests.filter((item) => item.status !== 'resolved' && item.status !== 'rejected').length)} subtext="Pending or active" />
+                    <InfoCard label="Resolved Requests" value={String(requests.filter((item) => item.status === 'resolved').length)} subtext="Completed by IT" />
+                  </div>
+
+                  {error ? (
+                    <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                      {error}
+                    </div>
+                  ) : null}
+                </div>
+
+                <form onSubmit={handleReload} className="rounded-[1.75rem] border border-slate-200 bg-slate-950 p-5 text-white shadow-2xl">
+                  <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-orange-300">Live Fetch Controls</div>
+                  <div className="mt-5 space-y-4">
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-400">API Base</span>
+                      <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} placeholder="http://localhost:3001" className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400" />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Bearer Token</span>
+                      <textarea value={token} onChange={(event) => setToken(event.target.value)} rows="5" placeholder="Optional. Falls back to localStorage.itms_token." className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400" />
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      <button type="submit" className="rounded-2xl bg-orange-400 px-5 py-3 text-sm font-extrabold text-slate-950 transition hover:bg-orange-300">
+                        Reload Live Data
+                      </button>
+                      <button type="button" onClick={() => { setAssets(SAMPLE_ASSETS); setRequests(SAMPLE_REQUESTS); setLoading(false); setError(''); }} className="rounded-2xl border border-slate-700 px-5 py-3 text-sm font-extrabold text-white transition hover:bg-slate-800">
+                        Use Sample Data
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section className="mt-8 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+              <div className="space-y-6">
+                <div className="rounded-[2rem] border border-white/70 bg-white/85 p-6 shadow-panel backdrop-blur">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Assets</div>
+                      <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-slate-950">Assigned devices</h2>
+                    </div>
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.18em] text-slate-600">
+                      {assets.devices.length} devices
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    {loading ? <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm font-semibold text-slate-500">Loading devices...</div> : null}
+                    {!loading && assets.devices.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm font-semibold text-slate-500">No assigned devices.</div> : null}
+                    {assets.devices.map((device) => {
+                      const target = `device-detail.html?id=${encodeURIComponent(device.id)}&apiBase=${encodeURIComponent(apiBase)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+                      return (
+                        <a key={device.id} href={target} className="block rounded-[1.5rem] border border-slate-200 bg-slate-50/90 px-4 py-4 transition hover:-translate-y-0.5 hover:bg-white hover:shadow-lg">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <div className="text-base font-extrabold text-slate-950">{device.hostname}</div>
+                              <div className="mt-1 text-sm font-medium text-slate-500">{sentence(device.assetTag)} | {sentence(device.serialNumber, 'No serial')} | {sentence(device.specs, 'No specs')}</div>
+                            </div>
+                            <span className={cx('rounded-full px-3 py-1 text-xs font-extrabold ring-1', warrantyTone(device.warrantyBadge))}>{pretty(device.warrantyBadge)}</span>
+                          </div>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-[2rem] border border-white/70 bg-white/85 p-6 shadow-panel backdrop-blur">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Assets</div>
+                      <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-slate-950">Assigned stock items</h2>
+                    </div>
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.18em] text-slate-600">
+                      {assets.items.length} items
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    {loading ? <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm font-semibold text-slate-500">Loading stock items...</div> : null}
+                    {!loading && assets.items.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm font-semibold text-slate-500">No assigned stock items.</div> : null}
+                    {assets.items.map((item) => (
+                      <div key={item.id} className="rounded-[1.5rem] border border-slate-200 bg-slate-50/90 px-4 py-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="text-base font-extrabold text-slate-950">{item.name}</div>
+                            <div className="mt-1 text-sm font-medium text-slate-500">{sentence(item.itemCode)} | {sentence(item.serialNumber, 'No serial')} | {sentence(item.specs, 'No specs')}</div>
+                          </div>
+                          <span className={cx('rounded-full px-3 py-1 text-xs font-extrabold ring-1', warrantyTone(item.warrantyBadge))}>{pretty(item.warrantyBadge)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <form onSubmit={handleSubmit} className="rounded-[2rem] border border-white/70 bg-white/85 p-6 shadow-panel backdrop-blur">
+                  <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Requests</div>
+                  <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-slate-950">Raise a new request</h2>
+                  <div className="mt-5 space-y-4">
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Request Type</span>
+                      <select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value }))} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-orange-400">
+                        {REQUEST_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Title</span>
+                      <input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} placeholder="Short request title" className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-orange-400" />
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Description</span>
+                      <textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} rows="5" placeholder="Describe the issue or request" className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-orange-400" />
+                    </label>
+                    <button type="submit" disabled={submitting} className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-extrabold text-white transition hover:bg-orange-600 disabled:opacity-60">
+                      {submitting ? 'Submitting...' : 'Raise Request'}
+                    </button>
+                  </div>
+                </form>
+
+                <div className="rounded-[2rem] border border-white/70 bg-white/85 p-6 shadow-panel backdrop-blur">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs font-extrabold uppercase tracking-[0.24em] text-slate-400">Requests</div>
+                      <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-slate-950">Request history</h2>
+                    </div>
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.18em] text-slate-600">
+                      {requests.length} total
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-4 max-h-[54rem] overflow-y-auto pr-1">
+                    {loading ? <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm font-semibold text-slate-500">Loading requests...</div> : null}
+                    {!loading && requests.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm font-semibold text-slate-500">No requests raised yet.</div> : null}
+                    {requests.map((request) => (
+                      <article key={request.id} className="rounded-[1.5rem] border border-slate-200 bg-slate-50/90 px-4 py-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="text-base font-extrabold text-slate-950">{request.title}</div>
+                            <div className="mt-1 text-sm font-medium text-slate-500">{request.type} | {new Date(request.createdAt).toLocaleString()}</div>
+                          </div>
+                          <span className={cx('rounded-full px-3 py-1 text-xs font-extrabold ring-1', requestTone(request.status))}>{pretty(request.status)}</span>
+                        </div>
+
+                        <div className="mt-4 text-sm leading-6 text-slate-600">{sentence(request.description, 'No description provided.')}</div>
+
+                        {request.notes ? (
+                          <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-medium text-orange-900">
+                            IT notes: {request.notes}
+                          </div>
+                        ) : null}
+
+                        {request.comments && request.comments.length ? (
+                          <div className="mt-4 space-y-2">
+                            {request.comments.map((comment) => (
+                              <div key={comment.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                <div className="text-sm font-bold text-slate-900">{comment.author}</div>
+                                <div className="mt-1 text-sm text-slate-600">{comment.note}</div>
+                                <div className="mt-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">{new Date(comment.createdAt).toLocaleString()}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </main>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
