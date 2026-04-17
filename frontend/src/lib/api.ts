@@ -15,27 +15,16 @@ export class ApiError extends Error {
 
 let authRedirectInFlight = false;
 
+export function resetAuthRedirectState() {
+  authRedirectInFlight = false;
+}
+
 function trimTrailingSlash(value: string) {
   return value.endsWith('/') ? value.slice(0, -1) : value;
 }
 
 function inferLocalApiOrigin() {
-  if (typeof window === 'undefined') {
-    return '';
-  }
-
-  const port = window.location.port;
-  if (import.meta.env.DEV) {
-    return '';
-  }
-
-  if (port === '3001' || port === '3012' || port === '3013') {
-    return '';
-  }
-
-  const protocol = window.location.protocol;
-  const hostname = window.location.hostname;
-  return `${protocol}//${hostname}:3001`;
+  return '';
 }
 
 export function getApiOrigin() {

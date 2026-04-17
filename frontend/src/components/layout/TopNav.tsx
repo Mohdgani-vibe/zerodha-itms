@@ -3,22 +3,15 @@ import { NavLink, Link, useLocation } from 'react-router-dom';
 import { 
   Search, Bell, MonitorSmartphone, ChevronDown, Moon, LogOut
 } from 'lucide-react';
-import { apiRequest } from '../../lib/api';
-import { clearStoredSession, getPortalSegmentForRole, getStoredSession } from '../../lib/session';
+import { apiRequest, resolveWebSocketUrl } from '../../lib/api';
+import { clearStoredSession, getPortalSegmentForRole, getPreferredPortalPath, getStoredSession } from '../../lib/session';
+import { getStoredTheme, toggleStoredTheme, type AppTheme } from '../../lib/theme';
 
 interface NotificationAnnouncement {
   id: string;
   title: string;
   audience: string;
   urgent: boolean;
-  createdAt: string;
-}
-
-interface NotificationAlert {
-  id: string;
-  title: string;
-  severity: string;
-  sourceLabel?: string;
   createdAt: string;
 }
 
@@ -59,27 +52,40 @@ interface NotificationListResponse<TItem> {
 }
 
 const ANNOUNCEMENT_AUDIENCES = ['All Employees', 'IT Team', 'Super Admin'] as const;
+const EMPLOYEE_ANNOUNCEMENT_AUDIENCES = ['All Employees'] as const;
 const NOTIFICATION_PAGE_SIZE = 4;
+const ANNOUNCEMENTS_UPDATED_EVENT = 'itms:announcements-updated';
+const CHAT_UPDATED_EVENT = 'itms:chat-updated';
+const REQUESTS_UPDATED_EVENT = 'itms:requests-updated';
 
 function getNotificationAudiences(role: string) {
   if (role === 'super_admin' || role === 'it_team') {
-    return [...ANNOUNCEMENT_AUDIENCES];
+    return ANNOUNCEMENT_AUDIENCES;
   }
 
-  return ['All Employees'];
+  return EMPLOYEE_ANNOUNCEMENT_AUDIENCES;
+}
+
+function encodeProtocolToken(token: string) {
+  return btoa(token).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function announcementSocketUrl() {
+  return resolveWebSocketUrl('/ws/announcements');
+}
+
+function announcementSocketProtocols(token: string) {
+  return ['itms.announcements.v1', `bearer.${encodeProtocolToken(token)}`];
 }
 
 function formatRequestStatus(status: string) {
   return status.replace(/_/g, ' ');
 }
 
-function formatSeverity(severity: string) {
-  return severity ? severity.toUpperCase() : 'INFO';
-}
-
 const portalNavItems = {
   admin: [
     { name: 'Users', path: '/users' },
+    { name: 'Patch', path: '/patch' },
     { name: 'Stock Inventory', path: '/stock' },
     { name: 'Alerts', path: '/alerts' },
     { name: 'Requests', path: '/requests' },
@@ -90,8 +96,8 @@ const portalNavItems = {
   ],
   it: [
     { name: 'Users', path: '/users' },
-    { name: 'Alerts', path: '/alerts' },
     { name: 'Patch', path: '/patch' },
+    { name: 'Alerts', path: '/alerts' },
     { name: 'Requests', path: '/requests' },
     { name: 'Gatepass', path: '/gatepass' },
     { name: 'Chat', path: '/chat' },
@@ -99,8 +105,9 @@ const portalNavItems = {
     { name: 'View Settings', path: '/settings' },
   ],
   emp: [
+    { name: 'Profile', path: '/profile' },
     { name: 'My Assets', path: '/assets' },
-    { name: 'Alerts', path: '/alerts' },
+    { name: 'My Alerts', path: '/alerts' },
     { name: 'My Requests', path: '/requests' },
     { name: 'Chat', path: '/chat' },
     { name: 'Announcements', path: '/announcements' },
@@ -110,21 +117,22 @@ const portalNavItems = {
 export default function TopNav() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [theme, setTheme] = useState<AppTheme>(() => getStoredTheme());
   const [announcementNotifications, setAnnouncementNotifications] = useState<NotificationAnnouncement[]>([]);
   const [announcementTotal, setAnnouncementTotal] = useState(0);
-  const [alertNotifications, setAlertNotifications] = useState<NotificationAlert[]>([]);
-  const [alertTotal, setAlertTotal] = useState(0);
   const [chatNotifications, setChatNotifications] = useState<NotificationChatItem[]>([]);
   const [chatTotal, setChatTotal] = useState(0);
   const [requestNotifications, setRequestNotifications] = useState<NotificationRequest[]>([]);
   const [requestTotal, setRequestTotal] = useState(0);
   const location = useLocation();
   const session = getStoredSession();
+  const sessionToken = session?.token || '';
+  const sessionRole = session?.user.role || '';
   const portalMatch = location.pathname.match(/^\/(admin|it|emp)(?:\/|$)/);
   const currentPortal = portalMatch?.[1] || (session ? getPortalSegmentForRole(session.user.role) : 'emp');
   const basePath = portalMatch ? `/${portalMatch[1]}` : `/${currentPortal}`;
   const navItems = portalNavItems[currentPortal as keyof typeof portalNavItems] || portalNavItems.emp;
-  const notificationAudiences = useMemo(() => getNotificationAudiences(session?.user.role || ''), [session?.user.role]);
+  const notificationAudiences = getNotificationAudiences(sessionRole);
 
   const isActive = (path: string) => {
     return location.pathname === `${basePath}${path}` || location.pathname.startsWith(`${basePath}${path}/`);
@@ -132,13 +140,12 @@ export default function TopNav() {
 
   useEffect(() => {
     let cancelled = false;
+    let announcementSocket: WebSocket | null = null;
 
     const loadNotifications = async () => {
-      if (!session) {
+      if (!sessionToken) {
         setAnnouncementNotifications([]);
         setAnnouncementTotal(0);
-        setAlertNotifications([]);
-        setAlertTotal(0);
         setChatNotifications([]);
         setChatTotal(0);
         setRequestNotifications([]);
@@ -148,23 +155,18 @@ export default function TopNav() {
 
       try {
         const announcementParams = new URLSearchParams({ paginate: '1', page: '1', page_size: String(NOTIFICATION_PAGE_SIZE) });
-        const alertsPath = session.user.role === 'employee'
-          ? `/api/me/alerts?paginate=1&page=1&page_size=${NOTIFICATION_PAGE_SIZE}`
-          : `/api/alerts?paginate=1&page=1&page_size=${NOTIFICATION_PAGE_SIZE}`;
-        const requestsPath = session.user.role === 'employee'
+        const requestsPath = sessionRole === 'employee'
           ? `/api/me/requests?paginate=1&page=1&page_size=${NOTIFICATION_PAGE_SIZE}`
           : `/api/requests?paginate=1&page=1&page_size=${NOTIFICATION_PAGE_SIZE}`;
 
         notificationAudiences.forEach((audience) => announcementParams.append('audience', audience));
-        const [announcementResult, alertsResult, chatChannelsResult, requestsResult] = await Promise.allSettled([
+        const [announcementResult, chatChannelsResult, requestsResult] = await Promise.allSettled([
           apiRequest<NotificationListResponse<NotificationAnnouncement>>(`/api/announcements?${announcementParams.toString()}`),
-          apiRequest<NotificationListResponse<NotificationAlert>>(alertsPath),
           apiRequest<NotificationListResponse<NotificationChatChannel>>(`/api/chat/channels?paginate=1&page=1&page_size=${NOTIFICATION_PAGE_SIZE}`),
           apiRequest<NotificationListResponse<NotificationRequest>>(requestsPath),
         ]);
         if (!cancelled) {
           const announcementData = announcementResult.status === 'fulfilled' ? announcementResult.value : null;
-          const alertsData = alertsResult.status === 'fulfilled' ? alertsResult.value : null;
           const requestsData = requestsResult.status === 'fulfilled' ? requestsResult.value : null;
 
           let chatItems: NotificationChatItem[] = [];
@@ -172,7 +174,7 @@ export default function TopNav() {
           if (chatChannelsResult.status === 'fulfilled') {
             const chatData = chatChannelsResult.value;
             const latestMessageResults = await Promise.allSettled(
-              (chatData.items || []).map(async (channel) => {
+              chatData.items.map(async (channel) => {
                 const messages = await apiRequest<NotificationListResponse<NotificationChatMessage>>(`/api/chat/channels/${channel.id}/messages?paginate=1&page=1&page_size=1`);
                 const latestMessage = messages.items?.[0];
                 return {
@@ -194,21 +196,17 @@ export default function TopNav() {
             chatCount = chatData.total || chatItems.length;
           }
 
-          setAnnouncementNotifications(announcementData?.items || []);
+          setAnnouncementNotifications(announcementData?.items ?? []);
           setAnnouncementTotal(announcementData?.total || 0);
-          setAlertNotifications(alertsData?.items || []);
-          setAlertTotal(alertsData?.total || 0);
           setChatNotifications(chatItems);
           setChatTotal(chatCount);
-          setRequestNotifications(requestsData?.items || []);
+          setRequestNotifications(requestsData?.items ?? []);
           setRequestTotal(requestsData?.total || 0);
         }
       } catch {
         if (!cancelled) {
           setAnnouncementNotifications([]);
           setAnnouncementTotal(0);
-          setAlertNotifications([]);
-          setAlertTotal(0);
           setChatNotifications([]);
           setChatTotal(0);
           setRequestNotifications([]);
@@ -219,32 +217,43 @@ export default function TopNav() {
 
     void loadNotifications();
 
-    const intervalId = window.setInterval(() => {
-      void loadNotifications();
-    }, isNotificationsOpen ? 3000 : 5000);
+    if (sessionToken) {
+      announcementSocket = new WebSocket(announcementSocketUrl(), announcementSocketProtocols(sessionToken));
+      announcementSocket.onmessage = () => {
+        if (!cancelled) {
+          void loadNotifications();
+          window.dispatchEvent(new Event(ANNOUNCEMENTS_UPDATED_EVENT));
+        }
+      };
+    }
 
-    const handleFocus = () => {
+    const handleAnnouncementUpdate = () => {
       void loadNotifications();
     };
 
-    window.addEventListener('focus', handleFocus);
+    const handleChatUpdate = () => {
+      void loadNotifications();
+    };
+
+    const handleRequestUpdate = () => {
+      void loadNotifications();
+    };
+
+    window.addEventListener(ANNOUNCEMENTS_UPDATED_EVENT, handleAnnouncementUpdate);
+    window.addEventListener(CHAT_UPDATED_EVENT, handleChatUpdate);
+    window.addEventListener(REQUESTS_UPDATED_EVENT, handleRequestUpdate);
 
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener(ANNOUNCEMENTS_UPDATED_EVENT, handleAnnouncementUpdate);
+      window.removeEventListener(CHAT_UPDATED_EVENT, handleChatUpdate);
+      window.removeEventListener(REQUESTS_UPDATED_EVENT, handleRequestUpdate);
+      announcementSocket?.close();
     };
-  }, [isNotificationsOpen, notificationAudiences, session, location.pathname]);
+  }, [location.pathname, notificationAudiences, sessionRole, sessionToken]);
 
   const notificationSections = useMemo(() => {
     return [
-      {
-        key: 'alerts',
-        title: 'Alerts',
-        total: alertTotal,
-        href: `${basePath}/alerts`,
-        items: alertNotifications,
-      },
       {
         key: 'announcements',
         title: 'Announcements',
@@ -267,16 +276,16 @@ export default function TopNav() {
         items: requestNotifications,
       },
     ] as const;
-  }, [alertNotifications, alertTotal, announcementNotifications, announcementTotal, basePath, chatNotifications, chatTotal, requestNotifications, requestTotal]);
+  }, [announcementNotifications, announcementTotal, basePath, chatNotifications, chatTotal, requestNotifications, requestTotal]);
 
-  const totalNotificationCount = alertTotal + announcementTotal + chatTotal + requestTotal;
+  const totalNotificationCount = announcementTotal + chatTotal + requestTotal;
 
   return (
     <header className="bg-white dark:bg-zinc-950 border-b border-zinc-200 dark:border-zinc-800 sticky top-0 z-40 shadow-sm text-zinc-800 dark:text-zinc-100 transition-colors">
       <div className="flex h-14 items-center justify-between px-4 xl:px-6">
         
         {/* Logo */}
-        <Link to={basePath || '/'} className="flex items-center gap-2 mr-6 flex-shrink-0 group cursor-pointer transition-opacity hover:opacity-90">
+        <Link to={`${basePath}/dashboard`} className="flex items-center gap-2 mr-6 flex-shrink-0 group cursor-pointer transition-opacity hover:opacity-90">
           <div className="bg-brand-600 dark:bg-brand-500 p-1.5 rounded flex items-center justify-center shadow-sm group-hover:bg-brand-700 dark:group-hover:bg-brand-600 transition-colors">
             <MonitorSmartphone className="h-5 w-5 text-white" />
           </div>
@@ -340,7 +349,7 @@ export default function TopNav() {
                       {totalNotificationCount} total
                     </div>
                   </div>
-                  <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                     {notificationSections.map((section) => (
                       <Link
                         key={section.key}
@@ -366,15 +375,6 @@ export default function TopNav() {
                       {section.items.length === 0 ? (
                         <div className="rounded-lg bg-zinc-50 px-3 py-3 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">No recent {section.title.toLowerCase()}.</div>
                       ) : null}
-                      {section.key === 'alerts' ? (section.items as NotificationAlert[]).map((item) => (
-                        <Link key={item.id} to={section.href} onClick={() => setIsNotificationsOpen(false)} className="mb-2 block rounded-lg border border-zinc-100 px-3 py-3 transition last:mb-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800/70">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="text-sm font-semibold text-zinc-900 dark:text-white">{item.title}</div>
-                            <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">{formatSeverity(item.severity)}</span>
-                          </div>
-                          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{item.sourceLabel || 'Alert'} • {new Date(item.createdAt).toLocaleString()}</div>
-                        </Link>
-                      )) : null}
                       {section.key === 'announcements' ? (section.items as NotificationAnnouncement[]).map((item) => (
                         <Link key={item.id} to={section.href} onClick={() => setIsNotificationsOpen(false)} className="mb-2 block rounded-lg border border-zinc-100 px-3 py-3 transition last:mb-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800/70">
                           <div className="flex items-center justify-between gap-3">
@@ -436,14 +436,23 @@ export default function TopNav() {
                 <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-lg rounded-lg py-1 z-50 animate-in fade-in slide-in-from-top-2">
                    <button 
                       onClick={() => {
-                         document.documentElement.classList.toggle('dark');
+                       setTheme(toggleStoredTheme());
                          setIsMenuOpen(false);
                       }}
                       className="w-full text-left px-4 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 flex items-center transition-colors"
                    >
                       <Moon className="w-4 h-4 mr-2" />
-                      Toggle Theme
+                     {theme === 'dark' ? 'Use Light Mode' : 'Use Dark Mode'}
                    </button>
+                   {session ? (
+                     <Link
+                       to={getPreferredPortalPath(session.user)}
+                       onClick={() => setIsMenuOpen(false)}
+                       className="block w-full px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800/50"
+                     >
+                       My Profile
+                     </Link>
+                   ) : null}
                    <div className="h-px bg-zinc-100 dark:bg-zinc-800 my-1"></div>
                    <button 
                       onClick={() => {

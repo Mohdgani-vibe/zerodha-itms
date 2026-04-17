@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #f0f6fe;
+  --color-brand-100: #e0edfc;
+  --color-brand-200: #c7e0fa;
+  --color-brand-300: #a3ccf6;
+  --color-brand-400: #79b1ef;
+  --color-brand-500: #5894e7;
+  --color-brand-600: #4077db;
+  --color-brand-700: #3461c9;
+  --color-brand-800: #2f4fa4;
+  --color-brand-900: #2a4382;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--color-slate-50, #f8fafc);
+  color: #18181b;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+.dark body {
+  background-color: #09090b;
+  color: #f4f4f5;
+}
+
+.dark .bg-white {
+  background-color: #18181b !important;
+}
+
+.dark .bg-zinc-50 {
+  background-color: #09090b !important;
+}
+
+.dark .bg-zinc-100 {
+  background-color: #27272a !important;
+}
+
+.dark .border-zinc-100,
+.dark .border-zinc-200 {
+  border-color: #27272a !important;
+}
+
+.dark .text-zinc-900 {
+  color: #fafafa !important;
+}
+
+.dark .text-zinc-800 {
+  color: #f4f4f5 !important;
+}
+
+.dark .text-zinc-700 {
+  color: #d4d4d8 !important;
+}
+
+.dark .text-zinc-600,
+.dark .text-zinc-500 {
+  color: #a1a1aa !important;
+}
+
+.dark .shadow-sm,
+.dark .shadow-lg {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03), 0 20px 45px rgba(0, 0, 0, 0.35) !important;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .gatepass-print-sheet,
+  .gatepass-print-sheet * {
+    visibility: visible;
+  }
+
+  .gatepass-preview-overlay {
+    position: absolute;
+    inset: 0;
+    display: block;
+    background: #fff;
+  }
+
+  .gatepass-print-sheet {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+  }
+
+  .gatepass-preview-actions {
+    display: none !important;
+  }
+
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+}
