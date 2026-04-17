@@ -937,11 +937,42 @@ export default function Chat() {
                         </p>
                      </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                     {isEmployee ? (
+                        <button
+                           type="button"
+                           onClick={handleStartFreshChat}
+                           className="inline-flex items-center gap-1.5 rounded-md border border-brand-200 bg-white px-3 py-1.5 text-xs font-bold uppercase text-brand-700 hover:bg-brand-50"
+                        >
+                           <MessageSquare className="h-3.5 w-3.5" />
+                           New Chat
+                        </button>
+                     ) : null}
                      {activeChannel?.linkedRequest?.ticketNumber ? <div className="rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-bold uppercase text-brand-700">{activeChannel.linkedRequest.ticketNumber}</div> : null}
                      <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs font-bold uppercase text-zinc-600">
                         {activeChannel?.kind || 'Channel'} · {formatChannelStatus(activeChannel?.status)}
                      </div>
+                     {canCloseActiveChannel ? (
+                        <button
+                           type="button"
+                           onClick={handleCloseChannel}
+                           disabled={!activeChannel || closingChannel}
+                           className="inline-flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-xs font-bold uppercase text-white hover:bg-rose-700 disabled:opacity-60"
+                        >
+                           <Trash2 className="h-3.5 w-3.5" />
+                           {closingChannel ? 'Closing...' : 'Close Chat'}
+                        </button>
+                     ) : null}
+                     {canReopenActiveChannel && isManager ? (
+                        <button
+                           type="button"
+                           onClick={() => void handleReopenChannel()}
+                           disabled={!activeChannel || closingChannel}
+                           className="rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs font-bold uppercase text-zinc-700 hover:bg-zinc-100 disabled:opacity-60"
+                        >
+                           {closingChannel ? 'Updating...' : 'Reopen Chat'}
+                        </button>
+                     ) : null}
                   </div>
                </div>
             </div>
@@ -982,7 +1013,23 @@ export default function Chat() {
                ) : null}
                {loadingMessages ? <div className="text-sm text-zinc-500">Loading messages...</div> : null}
                {!loadingMessages && activeChannelId && messages.length === 0 ? <div className="text-sm text-zinc-500">No messages in this channel yet.</div> : null}
-               {!activeChannelId ? <div className="text-sm text-zinc-500">Select a channel to start chatting.</div> : null}
+               {!activeChannelId ? (
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-brand-200 bg-brand-50/60 p-4 text-sm text-zinc-600">
+                     <div>
+                        <div className="font-semibold text-brand-800">No chat selected.</div>
+                        <div className="mt-1 text-xs text-zinc-600">Select an existing channel or start a fresh support chat.</div>
+                     </div>
+                     {isEmployee ? (
+                        <button
+                           type="button"
+                           onClick={handleStartFreshChat}
+                           className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wider text-brand-700 hover:bg-brand-50"
+                        >
+                           New Chat
+                        </button>
+                     ) : null}
+                  </div>
+               ) : null}
                {messages.map((msg) => {
                   const isMe = msg.author.id === session?.user.id;
                   return (
