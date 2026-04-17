@@ -218,6 +218,7 @@ export default function Chat() {
    const role = session?.user.role || '';
    const isEmployee = role === 'employee';
    const isManager = role === 'super_admin' || role === 'it_team';
+   const canCreateChat = isEmployee || isManager;
    const [query, setQuery] = useState('');
    const [draft, setDraft] = useState('');
    const [kindFilter, setKindFilter] = useState<'all' | 'support' | 'operations'>('all');
@@ -857,7 +858,7 @@ export default function Chat() {
                      </div>
                   </div>
                ) : null}
-               {isEmployee ? (
+               {canCreateChat ? (
                   <div className="mt-4 rounded-xl border border-brand-200 bg-brand-50/60 p-3">
                      <div className="flex items-center justify-between gap-3">
                         <div>
@@ -946,7 +947,7 @@ export default function Chat() {
                      </div>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
-                     {isEmployee ? (
+                     {canCreateChat ? (
                         <button
                            type="button"
                            onClick={handleStartFreshChat}
@@ -1036,7 +1037,7 @@ export default function Chat() {
                         <div className="font-semibold text-brand-800">No chat selected.</div>
                         <div className="mt-1 text-xs text-zinc-600">Select an existing channel or start a fresh support chat.</div>
                      </div>
-                     {isEmployee ? (
+                     {canCreateChat ? (
                         <button
                            type="button"
                            onClick={handleStartFreshChat}
@@ -1234,7 +1235,7 @@ export default function Chat() {
                   <div className="mt-6 flex justify-end">
                      <button type="button" onClick={() => {
                         setCloseResult(null);
-                        if (isEmployee) {
+                        if (canCreateChat) {
                            handleStartFreshChat();
                         }
                      }} className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white hover:bg-zinc-800">Okay</button>
