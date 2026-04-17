@@ -5,11 +5,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND_DIR="$REPO_ROOT/frontend"
 FRONTEND_DIST_DIR="$FRONTEND_DIR/dist"
 TEMPLATE_PATH="$REPO_ROOT/deploy/nginx/itms.conf"
+INSTALLER_SOURCE_DIR="$REPO_ROOT/scripts"
 
 SITE_NAME="${SITE_NAME:-itms}"
 SERVER_NAME="${SERVER_NAME:-${1:-10.10.21.11}}"
 BACKEND_UPSTREAM="${BACKEND_UPSTREAM:-127.0.0.1:3001}"
 WWW_ROOT="${WWW_ROOT:-/var/www/itms}"
+INSTALLERS_ROOT="${INSTALLERS_ROOT:-$WWW_ROOT/installers}"
 AVAILABLE_PATH="/etc/nginx/sites-available/${SITE_NAME}"
 ENABLED_PATH="/etc/nginx/sites-enabled/${SITE_NAME}"
 BUILD_USER="${SUDO_USER:-${USER:-}}"
@@ -88,6 +90,15 @@ fi
 echo "Syncing frontend assets to $WWW_ROOT..."
 	run_privileged mkdir -p "$WWW_ROOT"
 	run_privileged rsync -a --delete "$FRONTEND_DIST_DIR/" "$WWW_ROOT/"
+
+echo "Syncing installer assets to $INSTALLERS_ROOT..."
+	run_privileged mkdir -p "$INSTALLERS_ROOT"
+	run_privileged rsync -a --delete \
+		"$INSTALLER_SOURCE_DIR/install-itms-agent.sh" \
+		"$INSTALLER_SOURCE_DIR/install-itms-agent.ps1" \
+		"$INSTALLER_SOURCE_DIR/push-system-inventory.py" \
+		"$INSTALLER_SOURCE_DIR/push-system-inventory.ps1" \
+		"$INSTALLERS_ROOT/"
 
 server_name_escaped="$(escape_sed_replacement "$SERVER_NAME")"
 www_root_escaped="$(escape_sed_replacement "$WWW_ROOT")"
