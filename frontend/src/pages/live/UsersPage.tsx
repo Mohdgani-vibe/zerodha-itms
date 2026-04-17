@@ -156,6 +156,13 @@ interface UserMetaOptionsResponse {
   branches: LookupOption[];
 }
 
+interface EntityOption {
+  id: string;
+  short_code: string;
+  full_name: string;
+  is_active: boolean;
+}
+
 interface InstallOverrides {
   assignedToName?: string;
   assignedToEmail?: string;
@@ -581,6 +588,8 @@ export default function UsersPage() {
   const [installConfigLoading, setInstallConfigLoading] = useState(false);
   const [departmentOptions, setDepartmentOptions] = useState<LookupOption[]>([]);
   const [branchOptions, setBranchOptions] = useState<LookupOption[]>([]);
+  const [entityOptions, setEntityOptions] = useState<EntityOption[]>([]);
+  const [selectedEmployeeEntityId, setSelectedEmployeeEntityId] = useState('');
   const [accessSavingUserId, setAccessSavingUserId] = useState('');
   const [creatingEmployee, setCreatingEmployee] = useState(false);
   const [employeeForm, setEmployeeForm] = useState({
@@ -979,10 +988,14 @@ export default function UsersPage() {
 
     const loadMetaOptions = async () => {
       try {
-        const data = await apiRequest<UserMetaOptionsResponse>('/api/users/meta/options');
+        const [data, entities] = await Promise.all([
+          apiRequest<UserMetaOptionsResponse>('/api/users/meta/options'),
+          apiRequest<EntityOption[]>('/api/entities'),
+        ]);
         if (!cancelled) {
           setDepartmentOptions(data.departments || []);
           setBranchOptions(data.branches || []);
+          setEntityOptions(Array.isArray(entities) ? entities : []);
         }
       } catch (requestError) {
         if (!cancelled) {
@@ -1107,6 +1120,29 @@ export default function UsersPage() {
   }, [activePagedUsers, activeTab, selectedUserId]);
 
   const selectedUser = activePagedUsers.find((user) => user.id === selectedUserId) || null;
+  const activeEntityOptions = useMemo(() => {
+    const activeItems = entityOptions.filter((entity) => entity.is_active);
+    return activeItems.length ? activeItems : entityOptions;
+  }, [entityOptions]);
+  const defaultEntityId = selectedEmployeeEntityId || selectedUser?.entityId || activeEntityOptions[0]?.id || '';
+  const defaultEntityLabel = activeEntityOptions.find((entity) => entity.id === defaultEntityId)?.full_name || defaultEntityId;
+
+  useEffect(() => {
+    if (!activeEntityOptions.length) {
+      setSelectedEmployeeEntityId('');
+      return;
+    }
+
+    setSelectedEmployeeEntityId((current) => {
+      if (current && activeEntityOptions.some((entity) => entity.id === current)) {
+        return current;
+      }
+      if (selectedUser?.entityId && activeEntityOptions.some((entity) => entity.id === selectedUser.entityId)) {
+        return selectedUser.entityId;
+      }
+      return activeEntityOptions[0]?.id || '';
+    });
+  }, [activeEntityOptions, selectedUser]);
 
   useEffect(() => {
     if (!selectedUser) {
@@ -1235,13 +1271,11 @@ export default function UsersPage() {
     await refreshUserSummary();
   };
 
-  const defaultEntityId = selectedUser?.entityId || directoryUsers[0]?.entityId || installUsers[0]?.entityId || accessUsers[0]?.entityId || '';
-
   const handleCreateEmployee = async (event: React.FormEvent) => {
     event.preventDefault();
 
     if (!defaultEntityId) {
-      setError('No entity is available yet. Create or load an existing user first.');
+      setError('No entity is available yet. Create an entity first or select an active entity.');
       return;
     }
 
@@ -1966,8 +2000,15 @@ export default function UsersPage() {
           <form onSubmit={handleCreateEmployee} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
             <div className="text-xs font-bold uppercase tracking-wider text-zinc-500">Add Employee</div>
             <h2 className="mt-2 text-xl font-bold text-zinc-900">Create a new employee account</h2>
-            <p className="mt-1 text-sm text-zinc-500">Manual employee creation uses the current entity and keeps CSV tools in their own tab.</p>
+            <p className="mt-1 text-sm text-zinc-500">Manual employee creation uses the selected entity and keeps CSV tools in their own tab.</p>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <label className="text-sm text-zinc-700">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">Entity</div>
+                <select value={defaultEntityId} onChange={(event) => setSelectedEmployeeEntityId(event.target.value)} className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900" disabled={creatingEmployee || activeEntityOptions.length === 0}>
+                  <option value="">Select entity</option>
+                  {activeEntityOptions.map((entity) => <option key={entity.id} value={entity.id}>{entity.full_name} ({entity.short_code})</option>)}
+                </select>
+              </label>
               <label className="text-sm text-zinc-700">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">Full Name</div>
                 <input value={employeeForm.fullName} onChange={(event) => setEmployeeForm((current) => ({ ...current, fullName: event.target.value }))} className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900" />
@@ -2011,8 +2052,8 @@ export default function UsersPage() {
           </form>
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
             <div className="text-xs font-bold uppercase tracking-wider text-zinc-500">Entity</div>
-            <div className="mt-2 text-sm text-zinc-700">{defaultEntityId || 'No entity available yet'}</div>
-            <p className="mt-3 text-sm text-zinc-500">This form uses the current workspace entity. Department and branch selections are optional.</p>
+            <div className="mt-2 text-sm text-zinc-700">{defaultEntityLabel || 'No entity available yet'}</div>
+            <p className="mt-3 text-sm text-zinc-500">Choose the target entity before creating the employee. Department and branch selections are optional.</p>
           </div>
         </div>
       ) : null}
