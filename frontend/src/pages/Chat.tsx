@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Filter, MessageSquare, Search, Send, ShieldPlus, Trash2, Users } from 'lucide-react';
+import { Filter, MessageSquare, Plus, Search, Send, ShieldPlus, Trash2, Users } from 'lucide-react';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { apiRequest, resolveWebSocketUrl } from '../lib/api';
 import { getStoredSession } from '../lib/session';
@@ -864,7 +864,15 @@ export default function Chat() {
                            <div className="text-[11px] font-bold uppercase tracking-wider text-brand-700">Open Support Chat</div>
                            <p className="mt-1 text-xs text-zinc-600">Use a clear subject so the right IT owner is routed in quickly.</p>
                         </div>
-                        <button type="button" onClick={handleStartFreshChat} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">New Chat</button>
+                        <button
+                           type="button"
+                           onClick={handleStartFreshChat}
+                           aria-label="Create new chat"
+                           title="Create new chat"
+                           className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-brand-200 bg-white text-brand-700 hover:bg-brand-50"
+                        >
+                           <Plus className="h-4 w-4" />
+                        </button>
                      </div>
                      <input
                         type="text"
@@ -942,10 +950,11 @@ export default function Chat() {
                         <button
                            type="button"
                            onClick={handleStartFreshChat}
-                           className="inline-flex items-center gap-1.5 rounded-md border border-brand-200 bg-white px-3 py-1.5 text-xs font-bold uppercase text-brand-700 hover:bg-brand-50"
+                           aria-label="Create new chat"
+                           title="Create new chat"
+                           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-brand-200 bg-white text-brand-700 hover:bg-brand-50"
                         >
-                           <MessageSquare className="h-3.5 w-3.5" />
-                           New Chat
+                           <Plus className="h-4 w-4" />
                         </button>
                      ) : null}
                      {activeChannel?.linkedRequest?.ticketNumber ? <div className="rounded-md border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-bold uppercase text-brand-700">{activeChannel.linkedRequest.ticketNumber}</div> : null}
@@ -987,7 +996,15 @@ export default function Chat() {
                         <div className="mt-1 text-xs text-amber-800">Reopen it if you still need help, or start a new support chat for a fresh thread.</div>
                      </div>
                      <div className="flex items-center gap-2">
-                        <button type="button" onClick={handleStartFreshChat} className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wider text-amber-800 hover:bg-amber-100">New Chat</button>
+                        <button
+                           type="button"
+                           onClick={handleStartFreshChat}
+                           aria-label="Create new chat"
+                           title="Create new chat"
+                           className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-amber-300 bg-white text-amber-800 hover:bg-amber-100"
+                        >
+                           <Plus className="h-4 w-4" />
+                        </button>
                         <button
                            type="button"
                            onClick={() => void handleReopenChannel()}
@@ -1023,9 +1040,11 @@ export default function Chat() {
                         <button
                            type="button"
                            onClick={handleStartFreshChat}
-                           className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wider text-brand-700 hover:bg-brand-50"
+                           aria-label="Create new chat"
+                           title="Create new chat"
+                           className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-brand-200 bg-white text-brand-700 hover:bg-brand-50"
                         >
-                           New Chat
+                           <Plus className="h-4 w-4" />
                         </button>
                      ) : null}
                   </div>
@@ -1189,30 +1208,6 @@ export default function Chat() {
                      >
                         {addingTeammate ? 'Adding...' : 'Add Teammate'}
                      </button>
-                  </div>
-                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-                     <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-rose-700">
-                        <Trash2 className="h-3.5 w-3.5" /> Close Channel
-                     </div>
-                     <p className="mt-2 text-xs text-rose-700/80">Closing a chat converts it into a ticket automatically and keeps the ticket number linked for follow-up.</p>
-                     <button
-                        type="button"
-                        onClick={handleCloseChannel}
-                        disabled={!activeChannel || !canCloseActiveChannel || closingChannel}
-                        className="mt-3 w-full rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:opacity-60"
-                     >
-                        {closingChannel ? 'Closing...' : 'Close Chat'}
-                     </button>
-                     {canReopenActiveChannel ? (
-                        <button
-                           type="button"
-                           onClick={() => void handleReopenChannel()}
-                           disabled={!activeChannel || !canReopenActiveChannel || closingChannel}
-                           className="mt-3 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-700 hover:bg-zinc-100 disabled:opacity-60"
-                        >
-                           {closingChannel ? 'Updating...' : 'Reopen Chat'}
-                        </button>
-                     ) : null}
                   </div>
                </div>
             </aside>
