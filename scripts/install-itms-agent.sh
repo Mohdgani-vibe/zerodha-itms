@@ -554,11 +554,43 @@ EOF
 }
 
 run_initial_inventory_push() {
+  local -a collector_args
+  collector_args=(
+    /usr/bin/python3
+    "$COLLECTOR_TARGET"
+    --server-url "$SERVER_URL"
+    --token "$INGEST_TOKEN"
+    --category "$CATEGORY"
+    --notes "$NOTES"
+  )
+
+  if [[ -n "$ASSIGNED_TO_EMAIL" ]]; then
+    collector_args+=(--assigned-to-email "$ASSIGNED_TO_EMAIL")
+  fi
+  if [[ -n "$ASSIGNED_TO_NAME" ]]; then
+    collector_args+=(--assigned-to-name "$ASSIGNED_TO_NAME")
+  fi
+  if [[ -n "$EMPLOYEE_CODE" ]]; then
+    collector_args+=(--employee-code "$EMPLOYEE_CODE")
+  fi
+  if [[ -n "$DEPARTMENT_NAME" ]]; then
+    collector_args+=(--department-name "$DEPARTMENT_NAME")
+  fi
+  if [[ -n "$ASSET_TAG" ]]; then
+    collector_args+=(--asset-tag "$ASSET_TAG")
+  fi
+  if [[ -n "$ASSET_NAME" ]]; then
+    collector_args+=(--name "$ASSET_NAME")
+  fi
+  if [[ "$USE_HARDINFO_FALLBACK" == "true" ]]; then
+    collector_args+=(--use-hardinfo-fallback)
+  fi
+
   set -a
   # shellcheck disable=SC1090
   . "$ENV_FILE"
   set +a
-  /usr/bin/python3 "$COLLECTOR_TARGET"
+  "${collector_args[@]}"
 }
 
 prompt_if_missing() {
