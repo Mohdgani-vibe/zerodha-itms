@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"itms/backend/internal/integrations/hostbridge"
 )
 
 type Client struct {
@@ -35,6 +37,7 @@ func NewClient(baseURL string, token string, username string, password string, e
 		targetType: targetType,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
+			Transport: &http.Transport{DialContext: hostbridge.DialContext},
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return fmt.Errorf("saltstack redirects are not allowed")
 			},
@@ -110,6 +113,34 @@ func (client *Client) TargetConnected(ctx context.Context, target string) (bool,
 	return false, nil
 	}
 
+func (client *Client) AcceptMinionKey(ctx context.Context, target string) error {
+	if !client.Enabled() {
+		return nil
+	}
+	if strings.TrimSpace(target) == "" {
+		return nil
+	}
+
+	payload := client.withInlineEAuth(map[string]any{
+		"client": "wheel",
+		"fun":    "key.accept",
+		"match":  strings.TrimSpace(target),
+	})
+
+	var result struct {
+		Return []struct {
+			Data struct {
+				Success bool `json:"success"`
+			} `json:"data"`
+		} `json:"return"`
+	}
+	if err := client.doJSON(ctx, http.MethodPost, "/run", payload, &result); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (client *Client) RunState(ctx context.Context, target string, state string) (map[string]any, error) {
 	if !client.Enabled() {
 		return nil, fmt.Errorf("saltstack integration is not configured")
@@ -128,6 +159,42 @@ func (client *Client) RunState(ctx context.Context, target string, state string)
 		return nil, err
 	}
 	return result, nil
+}
+
+func (client *Client) RunCommand(ctx context.Context, target string, command string) (map[string]any, error) {
+	if !client.Enabled() {
+		return nil, fmt.Errorf("saltstack integration is not configured")
+	}
+	trimmedCommand := strings.TrimSpace(command)
+	if trimmedCommand == "" {
+		return nil, fmt.Errorf("command is required")
+	}
+
+	payload := client.withInlineEAuth(map[string]any{
+		"client":    "local",
+		"tgt":       target,
+		"expr_form": client.targetType,
+		"fun":       "cmd.run_all",
+		"arg":       []string{trimmedCommand},
+	})
+
+	var result struct {
+		Return []map[string]map[string]any `json:"return"`
+	}
+	if err := client.doJSON(ctx, http.MethodPost, "/run", payload, &result); err != nil {
+		return nil, err
+	}
+
+	for _, item := range result.Return {
+		if output, ok := item[target]; ok {
+			return output, nil
+		}
+		for _, output := range item {
+			return output, nil
+		}
+	}
+
+	return map[string]any{}, nil
 }
 
 func (client *Client) BuildTerminalURL(target string) string {

@@ -1,0 +1,5 @@
+ALTER TABLE gatepasses
+  ADD COLUMN IF NOT EXISTS origin_branch VARCHAR(150);
+
+ALTER TABLE gatepasses
+  ADD COLUMN IF NOT EXISTS recipient_branch VARCHAR(150);

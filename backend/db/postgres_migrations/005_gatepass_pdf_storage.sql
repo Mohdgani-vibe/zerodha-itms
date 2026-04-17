@@ -1,0 +1,5 @@
+ALTER TABLE gatepasses
+  ADD COLUMN IF NOT EXISTS pdf_data BYTEA;
+
+ALTER TABLE gatepasses
+  ADD COLUMN IF NOT EXISTS pdf_generated_at TIMESTAMPTZ;

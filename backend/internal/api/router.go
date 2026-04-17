@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 
 	"itms/backend/internal/app"
 	"itms/backend/internal/integrations/saltstack"
@@ -38,6 +39,148 @@ const (
 	maxInventoryIngestBytes  int64 = 8 << 20
 	maxInventoryIngestAssets       = 5000
 )
+
+var terminalAllowedCommands = map[string]struct{}{
+	"cat":        {},
+	"date":       {},
+	"df":         {},
+	"dmesg":      {},
+	"dpkg":       {},
+	"du":         {},
+	"env":        {},
+	"find":       {},
+	"free":       {},
+	"grep":       {},
+	"head":       {},
+	"hostname":   {},
+	"id":         {},
+	"ifconfig":   {},
+	"ip":         {},
+	"journalctl": {},
+	"last":       {},
+	"ls":         {},
+	"lscpu":      {},
+	"lsblk":      {},
+	"mount":      {},
+	"netstat":    {},
+	"printenv":   {},
+	"ps":         {},
+	"pwd":        {},
+	"rpm":        {},
+	"ss":         {},
+	"systemctl":  {},
+	"tail":       {},
+	"uname":      {},
+	"uptime":     {},
+	"whoami":     {},
+}
+
+var terminalBlockedFragments = []string{"&&", "||", ";", "|", ">", "<", "`", "$(", "${", "sudo ", " su ", " ssh ", "scp ", "sftp ", "rm ", "mkfs", "shutdown", "reboot", "poweroff", "passwd", "useradd", "usermod", "groupadd", "chmod ", "chown ", "tee ", "curl ", "wget ", "nc ", "ncat ", "python ", "python3 ", "perl ", "ruby ", "bash ", "sh ", "zsh ", "fish ", "vi ", "vim ", "nano ", " top ", " htop ", " less ", " more "}
+
+var terminalPresetCommands = []string{"hostname", "uptime", "df -h", "free -h", "ps aux", "systemctl status wazuh-agent", "journalctl -n 100", "ip addr"}
+
+var terminalPresetGroups = []gin.H{
+	{"label": "System", "commands": []string{"hostname", "uptime"}},
+	{"label": "Storage", "commands": []string{"df -h", "free -h"}},
+	{"label": "Processes", "commands": []string{"ps aux"}},
+	{"label": "Services", "commands": []string{"systemctl status wazuh-agent", "journalctl -n 100"}},
+	{"label": "Network", "commands": []string{"ip addr"}},
+}
+
+var terminalBlockedExamples = []string{"rm -rf /tmp/demo", "tail -f /var/log/syslog", "systemctl restart wazuh-agent", "sudo cat /etc/shadow", "curl https://example.com/script.sh", "ps aux | grep salt"}
+
+var userImportCSVHeaders = []string{"Username", "Email id", "Employee id", "department", "password", "role", "entity_code", "location", "is_active"}
+
+func terminalCommandPolicy(command string) error {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return fmt.Errorf("command is required")
+	}
+	lowerCommand := strings.ToLower(" " + trimmed + " ")
+	for _, fragment := range terminalBlockedFragments {
+		if strings.Contains(lowerCommand, fragment) {
+			return fmt.Errorf("command contains a blocked shell pattern")
+		}
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return fmt.Errorf("command is required")
+	}
+	rootCommand := strings.ToLower(strings.TrimSpace(fields[0]))
+	if _, ok := terminalAllowedCommands[rootCommand]; !ok {
+		return fmt.Errorf("command is not allowed in the terminal console")
+	}
+	if rootCommand == "systemctl" && len(fields) > 1 {
+		subcommand := strings.ToLower(strings.TrimSpace(fields[1]))
+		if subcommand != "status" && subcommand != "show" && subcommand != "list-units" && subcommand != "list-unit-files" {
+			return fmt.Errorf("only read-only systemctl commands are allowed")
+		}
+	}
+	if rootCommand == "journalctl" && len(fields) > 1 {
+		for _, field := range fields[1:] {
+			if strings.HasPrefix(field, "--vacuum") || strings.EqualFold(field, "--setup-keys") || strings.EqualFold(field, "--rotate") {
+				return fmt.Errorf("only read-only journalctl commands are allowed")
+			}
+		}
+	}
+	return nil
+}
+
+func terminalPolicyPayload() gin.H {
+	allowedCommands := make([]string, 0, len(terminalAllowedCommands))
+	for command := range terminalAllowedCommands {
+		allowedCommands = append(allowedCommands, command)
+	}
+	sort.Strings(allowedCommands)
+	return gin.H{
+		"allowedCommands": allowedCommands,
+		"presetCommands":  terminalPresetCommands,
+		"presetGroups":    terminalPresetGroups,
+		"blockedExamples": terminalBlockedExamples,
+		"restrictions": []string{
+			"Only approved read-only diagnostic commands are allowed.",
+			"Shell chaining, pipes, redirection, and subshell expressions are blocked.",
+			"Privilege escalation, remote access, download tools, and interpreter launches are blocked.",
+			"Interactive editors and long-running terminal UIs are blocked.",
+			"Only read-only systemctl and journalctl usage is allowed.",
+		},
+	}
+}
+
+func isSyntheticTestIdentity(fullName string, email string, employeeCode string) bool {
+	haystack := strings.ToLower(strings.Join([]string{fullName, email, employeeCode}, " "))
+	return strings.Contains(haystack, "probe") || strings.Contains(haystack, "smoke")
+}
+
+func fallbackFullNameFromEmail(email string) string {
+	localPart := strings.TrimSpace(email)
+	if at := strings.Index(localPart, "@"); at >= 0 {
+		localPart = localPart[:at]
+	}
+	localPart = strings.Trim(localPart, " ._-")
+	if localPart == "" {
+		return "New Employee"
+	}
+	parts := strings.FieldsFunc(localPart, func(r rune) bool {
+		switch r {
+		case '.', '_', '-', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+	for index, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[index] = strings.ToUpper(part[:1]) + strings.ToLower(part[1:])
+	}
+	name := strings.TrimSpace(strings.Join(parts, " "))
+	if name == "" {
+		return "New Employee"
+	}
+	return name
+}
 
 type compatDeviceRecord struct {
 	ID              string
@@ -66,15 +209,16 @@ type compatDeviceRecord struct {
 }
 
 type apiServer struct {
-	db        *sql.DB
-	config    app.Config
-	auth      *authn.Manager
-	googleSSO *authn.GoogleSSO
-	salt      *saltstack.Client
-	wazuh     *wazuh.Client
-	chat      *chatHub
-	sync      *inventorysync.Service
-	authLimiter *authAttemptLimiter
+	db            *sql.DB
+	config        app.Config
+	auth          *authn.Manager
+	googleSSO     *authn.GoogleSSO
+	salt          *saltstack.Client
+	wazuh         *wazuh.Client
+	chat          *chatHub
+	announcements *announcementHub
+	sync          *inventorysync.Service
+	authLimiter   *authAttemptLimiter
 }
 
 type authAttemptLimiter struct {
@@ -192,20 +336,22 @@ func paginationBounds(total int, page int, pageSize int) (start int, end int) {
 
 func NewRouter(db *sql.DB, config app.Config, syncService *inventorysync.Service) *gin.Engine {
 	server := &apiServer{
-		db:        db,
-		config:    config,
-		auth:      authn.NewManager(config.JWTSecret, config.JWTTTL),
-		googleSSO: authn.NewGoogleSSO(config.GoogleClientID, config.GoogleClientSecret, config.GoogleRedirectURL, config.GoogleHostedDomain),
-		salt:      saltstack.NewClient(config.SaltAPIBaseURL, config.SaltAPIToken, config.SaltAPIUsername, config.SaltAPIPassword, config.SaltAPIEAuth, config.SaltTargetType),
-		wazuh:     wazuh.NewClient(config.WazuhAPIBaseURL, config.WazuhAPIUsername, config.WazuhAPIPassword, config.WazuhAPICAFile, config.WazuhAPIInsecureSkipVerify),
-		chat:      newChatHub(),
-		sync:      syncService,
-		authLimiter: newAuthAttemptLimiter(15*time.Minute, 10, 15*time.Minute),
+		db:            db,
+		config:        config,
+		auth:          authn.NewManager(config.JWTSecret, config.JWTTTL),
+		googleSSO:     authn.NewGoogleSSO(config.GoogleClientID, config.GoogleClientSecret, config.GoogleRedirectURL, config.GoogleHostedDomain),
+		salt:          saltstack.NewClient(config.SaltAPIBaseURL, config.SaltAPIToken, config.SaltAPIUsername, config.SaltAPIPassword, config.SaltAPIEAuth, config.SaltTargetType),
+		wazuh:         wazuh.NewClient(config.WazuhAPIBaseURL, config.WazuhAPIUsername, config.WazuhAPIPassword, config.WazuhAPICAFile, config.WazuhAPIInsecureSkipVerify),
+		chat:          newChatHub(),
+		announcements: newAnnouncementHub(),
+		sync:          syncService,
+		authLimiter:   newAuthAttemptLimiter(15*time.Minute, 10, 15*time.Minute),
 	}
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery(), middleware.CORS(config.FrontendOrigin), middleware.Audit(db))
 	router.GET("/ws/chat", server.chatWebsocket)
+	router.GET("/ws/announcements", server.announcementWebsocket)
 	router.GET("/installers/install-itms-agent.ps1", server.downloadInstallerScript("install-itms-agent.ps1", "text/plain; charset=utf-8"))
 	router.GET("/installers/install-itms-agent.sh", server.downloadInstallerScript("install-itms-agent.sh", "text/plain; charset=utf-8"))
 	router.GET("/installers/push-system-inventory.ps1", server.downloadInstallerScript("push-system-inventory.ps1", "text/plain; charset=utf-8"))
@@ -240,12 +386,20 @@ func NewRouter(db *sql.DB, config app.Config, syncService *inventorysync.Service
 
 			protected.GET("/users", server.listUsers)
 			protected.GET("/users/meta/options", server.userMetaOptions)
+			protected.GET("/users/export", server.exportUsersCSV)
+			protected.GET("/users/import-template", server.exportUserImportTemplate)
+			protected.GET("/users/import-template-minimal", server.exportUserImportMinimalTemplate)
+			protected.POST("/users/import", server.importUsersCSV)
 			protected.GET("/integrations/install-config", server.getInstallConfig)
+			protected.GET("/settings/workflow", server.getWorkflowSettings)
+			protected.PUT("/settings/workflow", server.updateWorkflowSettings)
 			protected.POST("/users", server.createUser)
 			protected.GET("/users/:id", server.getUser)
 			protected.PATCH("/users/:id", server.updateUser)
 			protected.DELETE("/users/:id", server.deactivateUser)
 			protected.GET("/users/:id/assets", server.getUserAssets)
+			protected.GET("/me/profile", server.getMyProfile)
+			protected.PATCH("/me/profile", server.updateMyProfile)
 			protected.GET("/me/assets", server.getMyAssets)
 
 			protected.GET("/devices", server.listDevicesCompat)
@@ -282,7 +436,13 @@ func NewRouter(db *sql.DB, config app.Config, syncService *inventorysync.Service
 			protected.PUT("/requests/:id/status", server.updateRequestStatus)
 			protected.POST("/requests/:id/assign", server.assignRequest)
 			protected.GET("/chat/channels", server.listChatChannels)
+			protected.GET("/chat/tickets/summary", server.listChatTicketSummary)
 			protected.POST("/chat/channels", server.createChatChannel)
+			protected.POST("/chat/channels/:id/members", server.addChatChannelMembers)
+			protected.DELETE("/chat/channels/:id/members/:userId", server.removeChatChannelMember)
+			protected.PUT("/chat/channels/:id/owner", server.updateChatChannelOwner)
+			protected.PUT("/chat/channels/:id/close", server.closeChatChannel)
+			protected.PUT("/chat/channels/:id/reopen", server.reopenChatChannel)
 			protected.DELETE("/chat/channels/:id", server.deleteChatChannel)
 			protected.GET("/chat/channels/:id/messages", server.listChatMessages)
 			protected.GET("/patch/dashboard", server.patchDashboardCompat)
@@ -291,6 +451,8 @@ func NewRouter(db *sql.DB, config app.Config, syncService *inventorysync.Service
 			protected.POST("/patch/run", server.patchRunCompat)
 			protected.GET("/terminal/session", server.listTerminalSessionsCompat)
 			protected.POST("/terminal/session", server.createTerminalSessionCompat)
+			protected.GET("/terminal/targets/:minionId", server.getTerminalTarget)
+			protected.POST("/terminal/targets/:minionId/execute", server.executeTerminalCommand)
 
 			protected.GET("/assets", server.listAssets)
 			protected.POST("/assets", server.createAsset)
@@ -536,6 +698,27 @@ func (server *apiServer) me(c *gin.Context) {
 		return
 	}
 	httpx.JSON(c, http.StatusOK, server.userAuthPayload(user))
+}
+
+func (server *apiServer) getMyProfile(c *gin.Context) {
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	user, err := server.fetchUserByID(claims.UserID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "user not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	httpx.JSON(c, http.StatusOK, gin.H{
+		"id": user.ID, "emp_id": user.EmpID, "full_name": user.FullName, "email": user.Email, "entity_id": user.EntityID, "dept_id": user.DeptID,
+		"location_id": user.LocationID, "role": user.Role, "status": map[bool]string{true: "active", false: "inactive"}[user.IsActive],
+	})
 }
 
 func (server *apiServer) listEntities(c *gin.Context) {
@@ -952,6 +1135,7 @@ func (server *apiServer) listUsers(c *gin.Context) {
 	status := strings.ToLower(c.Query("status"))
 	search := strings.TrimSpace(c.Query("search"))
 	departmentLabel := strings.TrimSpace(c.Query("department_label"))
+	includeTestUsers := c.Query("include_test_users") == "1"
 	claims := middleware.CurrentClaims(c)
 	whereClauses := []string{"1 = 1"}
 	args := make([]any, 0, 12)
@@ -1004,6 +1188,9 @@ func (server *apiServer) listUsers(c *gin.Context) {
 		whereClauses = append(whereClauses, fmt.Sprintf("(CASE WHEN u.is_active THEN 'active' ELSE 'inactive' END) = $%d", argIndex))
 		args = append(args, status)
 		argIndex++
+	}
+	if !includeTestUsers {
+		whereClauses = append(whereClauses, "lower(u.full_name) NOT LIKE '%probe%' AND lower(u.full_name) NOT LIKE '%smoke%' AND lower(u.email) NOT LIKE '%probe%' AND lower(u.email) NOT LIKE '%smoke%' AND lower(COALESCE(u.emp_id, '')) NOT LIKE '%probe%' AND lower(COALESCE(u.emp_id, '')) NOT LIKE '%smoke%'")
 	}
 	if search != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("(lower(u.full_name) LIKE $%d OR lower(u.email) LIKE $%d OR lower(u.emp_id) LIKE $%d)", argIndex, argIndex, argIndex))
@@ -1132,6 +1319,10 @@ func (server *apiServer) getUser(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if isSyntheticTestIdentity(user.FullName, user.Email, user.EmpID) {
+		httpx.Error(c, http.StatusNotFound, "user not found")
+		return
+	}
 	if !server.userVisibleByEntity(c, user.EntityID, user.ID) {
 		httpx.Error(c, http.StatusForbidden, "forbidden")
 		return
@@ -1144,6 +1335,61 @@ func (server *apiServer) getUser(c *gin.Context) {
 
 func (server *apiServer) createUser(c *gin.Context) { server.upsertUser(c, true) }
 func (server *apiServer) updateUser(c *gin.Context) { server.upsertUser(c, false) }
+
+func (server *apiServer) updateMyProfile(c *gin.Context) {
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	user, err := server.fetchUserByID(claims.UserID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "user not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var input struct {
+		FullName   string `json:"full_name"`
+		DeptID     string `json:"dept_id"`
+		LocationID string `json:"location_id"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		httpx.Error(c, http.StatusBadRequest, "invalid profile payload")
+		return
+	}
+	fullName := strings.TrimSpace(input.FullName)
+	if fullName == "" {
+		fullName = user.FullName
+	}
+	deptID := strings.TrimSpace(input.DeptID)
+	locationID := strings.TrimSpace(input.LocationID)
+	if err := server.validateEntityLinks(user.EntityID, deptID, locationID); err != nil {
+		httpx.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	_, err = server.db.Exec(`
+		UPDATE users
+		SET full_name = $2,
+			dept_id = NULLIF($3, '')::uuid,
+			location_id = NULLIF($4, '')::uuid,
+			updated_at = NOW()
+		WHERE id = $1::uuid
+	`, user.ID, fullName, deptID, locationID)
+	if err != nil {
+		httpx.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	updatedUser, err := server.fetchUserByID(user.ID)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "profile_updated", TargetType: "user", TargetID: user.ID, Detail: gin.H{"dept_id": deptID, "location_id": locationID}})
+	httpx.JSON(c, http.StatusOK, server.userAuthPayload(updatedUser))
+}
 
 func (server *apiServer) upsertUser(c *gin.Context, create bool) {
 	if !server.requireRoles(c, "super_admin") {
@@ -1164,12 +1410,43 @@ func (server *apiServer) upsertUser(c *gin.Context, create bool) {
 		httpx.Error(c, http.StatusBadRequest, "invalid user payload")
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(input.Email))
-	if !strings.HasSuffix(email, "@zerodha.com") {
+	claims := middleware.CurrentClaims(c)
+	effectiveEntityID := strings.TrimSpace(input.EntityID)
+	effectiveDeptID := strings.TrimSpace(input.DeptID)
+	effectiveLocationID := strings.TrimSpace(input.LocationID)
+	effectiveEmail := strings.ToLower(strings.TrimSpace(input.Email))
+	if !create {
+		existingUser, err := server.fetchUserByID(c.Param("id"))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				httpx.Error(c, http.StatusNotFound, "user not found")
+				return
+			}
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if effectiveEmail == "" {
+			effectiveEmail = strings.ToLower(strings.TrimSpace(existingUser.Email))
+		}
+		if effectiveEntityID == "" {
+			effectiveEntityID = strings.TrimSpace(existingUser.EntityID)
+		}
+		if effectiveDeptID == "" {
+			effectiveDeptID = strings.TrimSpace(existingUser.DeptID)
+		}
+		if effectiveLocationID == "" {
+			effectiveLocationID = strings.TrimSpace(existingUser.LocationID)
+		}
+		if strings.TrimSpace(input.Role) != "" && claims != nil && claims.Role != "super_admin" && strings.TrimSpace(input.Role) != strings.TrimSpace(existingUser.Role) {
+			httpx.Error(c, http.StatusForbidden, "only super admin can update portal access")
+			return
+		}
+	}
+	if !strings.HasSuffix(effectiveEmail, "@zerodha.com") {
 		httpx.Error(c, http.StatusBadRequest, "only @zerodha.com email addresses are allowed")
 		return
 	}
-	if err := server.validateEntityLinks(input.EntityID, input.DeptID, input.LocationID); err != nil {
+	if err := server.validateEntityLinks(effectiveEntityID, effectiveDeptID, effectiveLocationID); err != nil {
 		httpx.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1193,12 +1470,12 @@ func (server *apiServer) upsertUser(c *gin.Context, create bool) {
 			SELECT $1, $2, $3, $4::uuid, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, r.id, $7, $8
 			FROM roles r WHERE r.name = $9
 			RETURNING id
-		`, strings.TrimSpace(input.EmpID), strings.TrimSpace(input.FullName), email, input.EntityID, input.DeptID, input.LocationID, hash, active, input.Role).Scan(&id)
+		`, strings.TrimSpace(input.EmpID), strings.TrimSpace(input.FullName), effectiveEmail, effectiveEntityID, effectiveDeptID, effectiveLocationID, hash, active, input.Role).Scan(&id)
 		if err != nil {
 			httpx.Error(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		_, _ = server.db.Exec(`INSERT INTO user_entity_access (user_id, entity_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, id, input.EntityID)
+		_, _ = server.db.Exec(`INSERT INTO user_entity_access (user_id, entity_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, id, effectiveEntityID)
 		middleware.TagAudit(c, middleware.AuditMeta{Action: "user_added", TargetType: "user", TargetID: id, Detail: input})
 		httpx.Created(c, gin.H{"id": id})
 		return
@@ -1215,7 +1492,7 @@ func (server *apiServer) upsertUser(c *gin.Context, create bool) {
 			is_active = COALESCE($9, is_active),
 			updated_at = NOW()
 		WHERE u.id = $1::uuid
-	`, c.Param("id"), strings.TrimSpace(input.EmpID), strings.TrimSpace(input.FullName), email, input.EntityID, input.DeptID, input.LocationID, input.Role, input.IsActive)
+	`, c.Param("id"), strings.TrimSpace(input.EmpID), strings.TrimSpace(input.FullName), effectiveEmail, effectiveEntityID, effectiveDeptID, effectiveLocationID, input.Role, input.IsActive)
 	if err != nil {
 		httpx.Error(c, http.StatusBadRequest, err.Error())
 		return
@@ -1239,6 +1516,19 @@ func (server *apiServer) deactivateUser(c *gin.Context) {
 
 func (server *apiServer) getUserAssets(c *gin.Context) {
 	if !server.requireRoles(c, "super_admin", "it_team", "employee") {
+		return
+	}
+	user, err := server.fetchUserByID(c.Param("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "user not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if isSyntheticTestIdentity(user.FullName, user.Email, user.EmpID) {
+		httpx.Error(c, http.StatusNotFound, "user not found")
 		return
 	}
 	claims := middleware.CurrentClaims(c)
@@ -1269,7 +1559,7 @@ func (server *apiServer) getMyAssets(c *gin.Context) {
 }
 
 func (server *apiServer) userMetaOptions(c *gin.Context) {
-	if !server.requireRoles(c, "super_admin", "it_team") {
+	if !server.requireRoles(c, "super_admin", "it_team", "employee") {
 		return
 	}
 	roles, err := server.simpleLookup(`SELECT id, name FROM roles ORDER BY name`)
@@ -1288,6 +1578,500 @@ func (server *apiServer) userMetaOptions(c *gin.Context) {
 		return
 	}
 	httpx.JSON(c, http.StatusOK, gin.H{"roles": roles, "departments": departments, "branches": branches})
+}
+
+func (server *apiServer) exportUserImportTemplate(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin") {
+		return
+	}
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=user-import-template.csv")
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write(userImportCSVHeaders)
+	_ = writer.Write([]string{"", "jane.doe@zerodha.com", "EMP010", "", "ChangeMe123!", "employee", "", "", "active"})
+	writer.Flush()
+}
+
+func (server *apiServer) exportUserImportMinimalTemplate(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin") {
+		return
+	}
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=user-import-minimal-template.csv")
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write(userImportCSVHeaders)
+	_ = writer.Write([]string{"", "employee1@zerodha.com", "EMP1001", "", "ChangeMe123!", "employee", "", "", "active"})
+	_ = writer.Write([]string{"", "employee2@zerodha.com", "EMP1002", "", "ChangeMe123!", "employee", "", "", "active"})
+	writer.Flush()
+}
+
+func (server *apiServer) exportUsersCSV(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin") {
+		return
+	}
+	rows, err := server.db.Query(`
+		SELECT u.full_name,
+		       u.email,
+		       u.emp_id,
+		       COALESCE(d.name, ''),
+		       '',
+		       COALESCE(r.name, ''),
+		       COALESCE(e.short_code, ''),
+		       COALESCE(l.full_name, ''),
+		       CASE WHEN u.is_active THEN 'active' ELSE 'inactive' END
+		FROM users u
+		LEFT JOIN departments d ON d.id = u.dept_id
+		LEFT JOIN roles r ON r.id = u.role_id
+		LEFT JOIN entities e ON e.id = u.entity_id
+		LEFT JOIN locations l ON l.id = u.location_id
+		ORDER BY u.full_name
+	`)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=users-export.csv")
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write(userImportCSVHeaders)
+	for rows.Next() {
+		record := make([]string, len(userImportCSVHeaders))
+		if err := rows.Scan(&record[0], &record[1], &record[2], &record[3], &record[4], &record[5], &record[6], &record[7], &record[8]); err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_ = writer.Write(record)
+	}
+	if err := rows.Err(); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writer.Flush()
+}
+
+func normalizeCSVHeader(value string) string {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(value, "\ufeff"))
+	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_")
+	return strings.ToLower(replacer.Replace(trimmed))
+}
+
+func csvRowValue(row map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := row[normalizeCSVHeader(key)]; ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func normalizeLookupToken(value string) string {
+	var builder strings.Builder
+	for _, char := range strings.ToLower(strings.TrimSpace(value)) {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
+}
+
+func parseCSVActiveValue(value string, fallback bool) (bool, error) {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return fallback, nil
+	}
+	switch trimmed {
+	case "true", "1", "yes", "y", "active":
+		return true, nil
+	case "false", "0", "no", "n", "inactive":
+		return false, nil
+	default:
+		return fallback, fmt.Errorf("invalid is_active value %q", value)
+	}
+}
+
+func normalizeEmployeeCode(value string) string {
+	trimmed := strings.ToUpper(strings.TrimSpace(value))
+	var builder strings.Builder
+	for _, char := range trimmed {
+		if (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			builder.WriteRune(char)
+		}
+	}
+	normalized := builder.String()
+	if normalized == "" {
+		return "EMP"
+	}
+	if len(normalized) > 10 {
+		return normalized[:10]
+	}
+	return normalized
+}
+
+func (server *apiServer) nextAvailableEmployeeCode(seed string, excludeUserID string) (string, error) {
+	base := normalizeEmployeeCode(seed)
+	for index := 0; index < 10000; index++ {
+		candidate := base
+		if index > 0 {
+			suffix := strconv.Itoa(index)
+			prefixLimit := 10 - len(suffix)
+			if prefixLimit < 1 {
+				prefixLimit = 1
+			}
+			trimmedBase := base
+			if len(trimmedBase) > prefixLimit {
+				trimmedBase = trimmedBase[:prefixLimit]
+			}
+			candidate = trimmedBase + suffix
+		}
+		var exists bool
+		if err := server.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM users WHERE emp_id = $1 AND ($2 = '' OR id <> $2::uuid))`, candidate, excludeUserID).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate a unique employee code for %q", seed)
+}
+
+func (server *apiServer) resolveEntityIDFromCSV(value string, fallback string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return strings.TrimSpace(fallback), nil
+	}
+	normalized := normalizeLookupToken(trimmed)
+	var id string
+	err := server.db.QueryRow(`
+		SELECT id
+		FROM entities
+		WHERE lower(short_code) = lower($1)
+			OR lower(full_name) = lower($1)
+			OR regexp_replace(lower(short_code), '[^a-z0-9]+', '', 'g') = $2
+			OR regexp_replace(lower(full_name), '[^a-z0-9]+', '', 'g') = $2
+		LIMIT 1
+	`, trimmed, normalized).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("unknown entity %q", value)
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+func (server *apiServer) resolveDepartmentIDFromCSV(value string, entityID string, fallback string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return strings.TrimSpace(fallback), nil
+	}
+	normalized := normalizeLookupToken(trimmed)
+	var id string
+	err := server.db.QueryRow(`
+		SELECT id
+		FROM departments
+		WHERE entity_id = $1::uuid
+		  AND (
+			lower(name) = lower($2)
+			OR lower(short_code) = lower($2)
+			OR regexp_replace(lower(name), '[^a-z0-9]+', '', 'g') = $3
+			OR regexp_replace(lower(short_code), '[^a-z0-9]+', '', 'g') = $3
+		  )
+		LIMIT 1
+	`, entityID, trimmed, normalized).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("unknown department %q for selected entity", value)
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+func (server *apiServer) resolveLocationIDFromCSV(value string, entityID string, fallback string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return strings.TrimSpace(fallback), nil
+	}
+	normalized := normalizeLookupToken(trimmed)
+	var id string
+	err := server.db.QueryRow(`
+		SELECT id
+		FROM locations
+		WHERE entity_id = $1::uuid
+		  AND (
+			lower(full_name) = lower($2)
+			OR lower(location_code) = lower($2)
+			OR regexp_replace(lower(full_name), '[^a-z0-9]+', '', 'g') = $3
+			OR regexp_replace(lower(location_code), '[^a-z0-9]+', '', 'g') = $3
+		  )
+		LIMIT 1
+	`, entityID, trimmed, normalized).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("unknown location %q for selected entity", value)
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+func (server *apiServer) resolveRoleIDFromCSV(value string) (string, string, error) {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		trimmed = "employee"
+	}
+	var id, name string
+	err := server.db.QueryRow(`
+		SELECT id, name
+		FROM roles
+		WHERE lower(name) = $1
+		LIMIT 1
+	`, trimmed).Scan(&id, &name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", fmt.Errorf("unknown role %q", value)
+		}
+		return "", "", err
+	}
+	return id, name, nil
+}
+
+func (server *apiServer) importUsersCSV(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin") {
+		return
+	}
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	actor, err := server.fetchUserByID(claims.UserID)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		httpx.Error(c, http.StatusBadRequest, "csv file is required")
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		httpx.Error(c, http.StatusBadRequest, "failed to open uploaded csv")
+		return
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	records, err := reader.ReadAll()
+	if err != nil {
+		httpx.Error(c, http.StatusBadRequest, "invalid csv file")
+		return
+	}
+	if len(records) == 0 {
+		httpx.Error(c, http.StatusBadRequest, "csv file is empty")
+		return
+	}
+
+	headers := map[int]string{}
+	availableHeaders := map[string]struct{}{}
+	for index, header := range records[0] {
+		normalized := normalizeCSVHeader(header)
+		headers[index] = normalized
+		availableHeaders[normalized] = struct{}{}
+	}
+	if _, ok := availableHeaders["full_name"]; !ok {
+		if _, aliasOk := availableHeaders["username"]; !aliasOk {
+			httpx.Error(c, http.StatusBadRequest, "csv must include a full_name column")
+			return
+		}
+	}
+	if _, ok := availableHeaders["email"]; !ok {
+		if _, aliasOk := availableHeaders["email_id"]; !aliasOk {
+			httpx.Error(c, http.StatusBadRequest, "csv must include an email column")
+			return
+		}
+	}
+
+	createdCount := 0
+	updatedCount := 0
+	rowErrors := make([]gin.H, 0)
+	for rowIndex, record := range records[1:] {
+		csvRowNumber := rowIndex + 2
+		row := map[string]string{}
+		empty := true
+		for index, value := range record {
+			header, ok := headers[index]
+			if !ok || header == "" {
+				continue
+			}
+			trimmed := strings.TrimSpace(value)
+			if trimmed != "" {
+				empty = false
+			}
+			row[header] = trimmed
+		}
+		if empty {
+			continue
+		}
+
+		fullName := csvRowValue(row, "full_name", "username", "name")
+		email := strings.ToLower(csvRowValue(row, "email", "email_id"))
+		if email == "" {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": "email is required"})
+			continue
+		}
+		if fullName == "" {
+			fullName = fallbackFullNameFromEmail(email)
+		}
+
+		existingUser, err := server.fetchUser(`WHERE lower(u.email) = lower($1)`, email)
+		create := false
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				create = true
+			} else {
+				rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+				continue
+			}
+		}
+
+		entityID, err := server.resolveEntityIDFromCSV(csvRowValue(row, "entity_code", "entity", "entity_short_code"), func() string {
+			if create {
+				return actor.EntityID
+			}
+			return existingUser.EntityID
+		}())
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		deptID, err := server.resolveDepartmentIDFromCSV(csvRowValue(row, "department", "dept", "department_name"), entityID, func() string {
+			if create {
+				return ""
+			}
+			return existingUser.DeptID
+		}())
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		locationID, err := server.resolveLocationIDFromCSV(csvRowValue(row, "location", "branch", "location_name", "branch_name"), entityID, func() string {
+			if create {
+				return ""
+			}
+			return existingUser.LocationID
+		}())
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		if err := server.validateEntityLinks(entityID, deptID, locationID); err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		roleValue := csvRowValue(row, "role")
+		if roleValue == "" && !create {
+			roleValue = existingUser.Role
+		}
+		roleID, normalizedRole, err := server.resolveRoleIDFromCSV(roleValue)
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		active, err := parseCSVActiveValue(csvRowValue(row, "is_active", "status"), func() bool {
+			if create {
+				return true
+			}
+			return existingUser.IsActive
+		}())
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		password := csvRowValue(row, "password", "initial_password")
+		var passwordHash any = nil
+		if password != "" {
+			hashBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+				continue
+			}
+			passwordHash = string(hashBytes)
+		} else if create {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": "password is required for new users"})
+			continue
+		}
+
+		empSeed := csvRowValue(row, "employee_code", "emp_id", "employee_id", "empoyee_id")
+		if empSeed == "" && !create {
+			empSeed = existingUser.EmpID
+		}
+		if empSeed == "" {
+			parts := strings.Split(email, "@")
+			empSeed = parts[0]
+		}
+		empID, err := server.nextAvailableEmployeeCode(empSeed, func() string {
+			if create {
+				return ""
+			}
+			return existingUser.ID
+		}())
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+
+		if create {
+			var id string
+			err = server.db.QueryRow(`
+				INSERT INTO users (emp_id, full_name, email, entity_id, dept_id, location_id, role_id, password_hash, is_active)
+				VALUES ($1, $2, $3, $4::uuid, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid, $7::uuid, $8, $9)
+				RETURNING id
+			`, empID, fullName, email, entityID, deptID, locationID, roleID, passwordHash, active).Scan(&id)
+			if err != nil {
+				rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+				continue
+			}
+			_, _ = server.db.Exec(`INSERT INTO user_entity_access (user_id, entity_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, id, entityID)
+			createdCount++
+			continue
+		}
+
+		_, err = server.db.Exec(`
+			UPDATE users
+			SET emp_id = $2,
+				full_name = $3,
+				email = $4,
+				entity_id = $5::uuid,
+				dept_id = NULLIF($6, '')::uuid,
+				location_id = NULLIF($7, '')::uuid,
+				role_id = $8::uuid,
+				password_hash = COALESCE($9, password_hash),
+				is_active = $10,
+				updated_at = NOW()
+			WHERE id = $1::uuid
+		`, existingUser.ID, empID, fullName, email, entityID, deptID, locationID, roleID, passwordHash, active)
+		if err != nil {
+			rowErrors = append(rowErrors, gin.H{"row": csvRowNumber, "message": err.Error()})
+			continue
+		}
+		_, _ = server.db.Exec(`INSERT INTO user_entity_access (user_id, entity_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, existingUser.ID, entityID)
+		middleware.TagAudit(c, middleware.AuditMeta{Action: "user_imported", TargetType: "user", TargetID: existingUser.ID, Detail: gin.H{"email": email, "role": normalizedRole, "row": csvRowNumber}})
+		updatedCount++
+	}
+
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "user_import", TargetType: "user", TargetID: actor.ID, Detail: gin.H{"created": createdCount, "updated": updatedCount, "errors": len(rowErrors), "filename": fileHeader.Filename}})
+	httpx.JSON(c, http.StatusOK, gin.H{"created": createdCount, "updated": updatedCount, "errors": rowErrors, "headers": userImportCSVHeaders})
 }
 
 func (server *apiServer) getInstallConfig(c *gin.Context) {
@@ -1321,6 +2105,8 @@ func (server *apiServer) getInstallConfig(c *gin.Context) {
 		cancel()
 	}
 
+	portalInstallReady := strings.TrimSpace(serverURL) != "" && strings.TrimSpace(server.config.InventoryIngestToken) != ""
+
 	httpx.JSON(c, http.StatusOK, gin.H{
 		"publicServerUrl":      serverURL,
 		"inventoryIngestToken": strings.TrimSpace(server.config.InventoryIngestToken),
@@ -1328,7 +2114,7 @@ func (server *apiServer) getInstallConfig(c *gin.Context) {
 		"wazuhManagerHost":     wazuhManagerHost,
 		"saltApiConfigured":    saltAvailable,
 		"wazuhApiConfigured":   server.wazuh != nil && server.wazuh.Enabled(),
-		"portalInstallReady":   saltAvailable,
+		"portalInstallReady":   portalInstallReady,
 	})
 }
 
@@ -1336,6 +2122,12 @@ func (server *apiServer) loadAssignedAssets(userID string) ([]gin.H, []gin.H, er
 	rows, err := server.db.Query(`
 		SELECT assets.id, asset_tag, assets.name, category, COALESCE(hostname, ''), COALESCE(serial_number, ''), COALESCE(model, ''), COALESCE(warranty_until::text, ''), status, is_compute,
 			COALESCE(cd.os_name, ''),
+			COALESCE((
+				SELECT MAX(h.created_at)::text
+				FROM asset_history h
+				WHERE h.asset_id = assets.id
+				  AND h.action = 'asset_assigned'
+			), ''),
 			COALESCE(salt_minion_id, ''), COALESCE(wazuh_agent_id, ''),
 			EXISTS(SELECT 1 FROM asset_software_inventory sw WHERE sw.asset_id = assets.id AND (lower(sw.name) LIKE '%salt-minion%' OR lower(sw.name) LIKE '%salt minion%' OR lower(sw.name) LIKE '%saltstack%')),
 			EXISTS(SELECT 1 FROM asset_software_inventory sw WHERE sw.asset_id = assets.id AND lower(sw.name) LIKE '%wazuh%'),
@@ -1353,10 +2145,10 @@ func (server *apiServer) loadAssignedAssets(userID string) ([]gin.H, []gin.H, er
 	devices := make([]gin.H, 0)
 	items := make([]gin.H, 0)
 	for rows.Next() {
-		var id, assetTag, name, category, hostname, serial, model, warranty, status, osName, saltMinionID, wazuhAgentID string
+		var id, assetTag, name, category, hostname, serial, model, warranty, status, osName, assignedAt, saltMinionID, wazuhAgentID string
 		var hasSaltSoftware, hasWazuhSoftware, hasOpenSCAPSoftware, hasClamAVSoftware bool
 		var compute bool
-		if err := rows.Scan(&id, &assetTag, &name, &category, &hostname, &serial, &model, &warranty, &status, &compute, &osName, &saltMinionID, &wazuhAgentID, &hasSaltSoftware, &hasWazuhSoftware, &hasOpenSCAPSoftware, &hasClamAVSoftware); err != nil {
+		if err := rows.Scan(&id, &assetTag, &name, &category, &hostname, &serial, &model, &warranty, &status, &compute, &osName, &assignedAt, &saltMinionID, &wazuhAgentID, &hasSaltSoftware, &hasWazuhSoftware, &hasOpenSCAPSoftware, &hasClamAVSoftware); err != nil {
 			return nil, nil, err
 		}
 		entry := gin.H{
@@ -1371,6 +2163,7 @@ func (server *apiServer) loadAssignedAssets(userID string) ([]gin.H, []gin.H, er
 			"specs":             emptyToNil(model),
 			"warranty_until":    emptyToNil(warranty),
 			"warrantyExpiresAt": emptyToNil(warranty),
+			"assignedAt":        emptyToNil(assignedAt),
 			"status":            status,
 			"category":          category,
 			"osName":            emptyToNil(osName),
@@ -1385,7 +2178,47 @@ func (server *apiServer) loadAssignedAssets(userID string) ([]gin.H, []gin.H, er
 		entry["item_code"] = assetTag
 		items = append(items, entry)
 	}
-	return devices, items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	stockRows, err := server.db.Query(`
+		SELECT id, item_code, name, COALESCE(serial_number, ''), COALESCE(specs, ''), COALESCE(warranty_expires_at::text, ''), status,
+			COALESCE((
+				SELECT MAX(a.created_at)::text
+				FROM audit_log a
+				WHERE a.target_type = 'stock_item'
+				  AND a.target_id = stock_items.id
+				  AND a.action = 'stock_item_allocated'
+			), '')
+		FROM stock_items
+		WHERE assigned_user_id = $1::uuid
+		ORDER BY item_code
+	`, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer stockRows.Close()
+	for stockRows.Next() {
+		var id, itemCode, name, serialNumber, specs, warranty, status, assignedAt string
+		if err := stockRows.Scan(&id, &itemCode, &name, &serialNumber, &specs, &warranty, &status, &assignedAt); err != nil {
+			return nil, nil, err
+		}
+		items = append(items, gin.H{
+			"id":                id,
+			"itemCode":          itemCode,
+			"item_code":         itemCode,
+			"name":              name,
+			"serialNumber":      emptyToNil(serialNumber),
+			"serial_number":     emptyToNil(serialNumber),
+			"specs":             emptyToNil(specs),
+			"warrantyExpiresAt": emptyToNil(warranty),
+			"warranty_until":    emptyToNil(warranty),
+			"assignedAt":        emptyToNil(assignedAt),
+			"status":            status,
+		})
+	}
+	return devices, items, stockRows.Err()
 }
 
 func (server *apiServer) simpleLookup(query string) ([]gin.H, error) {
@@ -1834,6 +2667,151 @@ func (server *apiServer) createTerminalSessionCompat(c *gin.Context) {
 	httpx.JSON(c, http.StatusOK, gin.H{"id": asset.ID, "deviceId": asset.ID, "status": "started", "createdAt": time.Now().UTC(), "requestedBy": middleware.CurrentClaims(c).Name, "connection": terminalPayload})
 }
 
+func (server *apiServer) getTerminalTarget(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin", "it_team") {
+		return
+	}
+	minionID := strings.TrimSpace(c.Param("minionId"))
+	if minionID == "" {
+		httpx.Error(c, http.StatusBadRequest, "terminal target is required")
+		return
+	}
+	asset, err := server.fetchAssetByMinionID(minionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "terminal target not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !asset.IsCompute {
+		httpx.Error(c, http.StatusBadRequest, "terminal is only available for compute assets")
+		return
+	}
+	connected := false
+	if server.salt != nil && server.salt.Enabled() {
+		connected, err = server.salt.TargetConnected(c.Request.Context(), minionID)
+		if err != nil {
+			httpx.Error(c, http.StatusBadGateway, err.Error())
+			return
+		}
+	}
+	hostname := strings.TrimSpace(asset.Hostname)
+	if hostname == "" {
+		hostname = strings.TrimSpace(asset.AssetTag)
+	}
+	if hostname == "" {
+		hostname = minionID
+	}
+	httpx.JSON(c, http.StatusOK, gin.H{
+		"assetId":   asset.ID,
+		"hostname":  hostname,
+		"assetTag":  asset.AssetTag,
+		"minionId":  minionID,
+		"connected": connected,
+		"policy":    terminalPolicyPayload(),
+	})
+}
+
+func (server *apiServer) executeTerminalCommand(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin", "it_team") {
+		return
+	}
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if server.salt == nil || !server.salt.Enabled() {
+		httpx.Error(c, http.StatusBadGateway, "saltstack integration is not configured")
+		return
+	}
+	minionID := strings.TrimSpace(c.Param("minionId"))
+	if minionID == "" {
+		httpx.Error(c, http.StatusBadRequest, "terminal target is required")
+		return
+	}
+	var input struct {
+		Command string `json:"command"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		httpx.Error(c, http.StatusBadRequest, "invalid terminal command payload")
+		return
+	}
+	command := strings.TrimSpace(input.Command)
+	if command == "" {
+		httpx.Error(c, http.StatusBadRequest, "command is required")
+		return
+	}
+	asset, err := server.fetchAssetByMinionID(minionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "terminal target not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !asset.IsCompute {
+		httpx.Error(c, http.StatusBadRequest, "terminal is only available for compute assets")
+		return
+	}
+	hostname := strings.TrimSpace(asset.Hostname)
+	if hostname == "" {
+		hostname = strings.TrimSpace(asset.AssetTag)
+	}
+	if hostname == "" {
+		hostname = minionID
+	}
+	if err := terminalCommandPolicy(command); err != nil {
+		detail := gin.H{"minionId": minionID, "hostname": hostname, "command": command, "policy": err.Error()}
+		middleware.TagAudit(c, middleware.AuditMeta{Action: "terminal_command_blocked", TargetType: "asset", TargetID: asset.ID, Detail: detail})
+		_, _ = server.recordAssetHistory(asset.ID, claims.UserID, "terminal_command_blocked", detail)
+		httpx.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	connected, err := server.salt.TargetConnected(c.Request.Context(), minionID)
+	if err != nil {
+		httpx.Error(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !connected {
+		httpx.Error(c, http.StatusBadGateway, "salt minion is not connected to the master for this asset")
+		return
+	}
+	output, err := server.salt.RunCommand(c.Request.Context(), minionID, command)
+	if err != nil {
+		server.recordOperationalAlert(asset, claims.UserID, "terminal", "high", "Terminal command failed", err.Error())
+		httpx.Error(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	stdout := strings.TrimRight(fmt.Sprint(output["stdout"]), "\n")
+	stderr := strings.TrimRight(fmt.Sprint(output["stderr"]), "\n")
+	if stdout == "<nil>" {
+		stdout = ""
+	}
+	if stderr == "<nil>" {
+		stderr = ""
+	}
+	auditDetail := gin.H{
+		"minionId":    minionID,
+		"hostname":    hostname,
+		"command":     command,
+		"retcode":     output["retcode"],
+		"stdoutBytes": len(stdout),
+		"stderrBytes": len(stderr),
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "terminal_command_executed", TargetType: "asset", TargetID: asset.ID, Detail: auditDetail})
+	_, _ = server.recordAssetHistory(asset.ID, claims.UserID, "terminal_command", auditDetail)
+	httpx.JSON(c, http.StatusOK, gin.H{
+		"command": command,
+		"stdout":  stdout,
+		"stderr":  stderr,
+		"retcode": output["retcode"],
+	})
+}
+
 func (server *apiServer) loadCompatDevices(c *gin.Context) ([]compatDeviceRecord, error) {
 	rows, err := server.db.Query(`
 		SELECT a.id, a.asset_tag, COALESCE(NULLIF(a.hostname, ''), a.asset_tag), a.category, COALESCE(cd.os_name, ''), a.status,
@@ -1989,11 +2967,25 @@ func (server *apiServer) ingestInventorySnapshot(c *gin.Context) {
 		return
 	}
 	for _, asset := range assets {
+		if server.salt != nil {
+			target := strings.TrimSpace(asset.SaltMinionID)
+			if target != "" {
+				if err := server.salt.AcceptMinionKey(c.Request.Context(), target); err != nil {
+					log.Printf("inventory salt key accept skipped for %s: %v", target, err)
+				}
+			}
+		}
 		if err := server.ensureInventoryEnrollmentRequest(c.Request.Context(), asset); err != nil {
 			log.Printf("inventory enrollment request skipped for %s: %v", strings.TrimSpace(asset.AssetTag), err)
 		}
 		if err := server.completeInventoryEnrollmentRequest(c.Request.Context(), asset); err != nil {
 			log.Printf("inventory enrollment request completion skipped for %s: %v", strings.TrimSpace(asset.AssetTag), err)
+		}
+		if err := server.persistInventorySecurityReports(c.Request.Context(), asset); err != nil {
+			log.Printf("inventory security report ingest skipped for %s: %v", strings.TrimSpace(asset.AssetTag), err)
+		}
+		if err := server.persistInventoryWazuhFindings(c.Request.Context(), asset); err != nil {
+			log.Printf("inventory wazuh finding ingest skipped for %s: %v", strings.TrimSpace(asset.AssetTag), err)
 		}
 	}
 	httpx.JSON(c, http.StatusAccepted, status)
@@ -3019,7 +4011,6 @@ func (server *apiServer) listAudit(c *gin.Context) {
 				continue
 			}
 		}
-		moduleCounts[module]++
 		if targetTypeFilter != "" && strings.ToLower(strings.TrimSpace(targetType)) != targetTypeFilter {
 			continue
 		}
@@ -3029,6 +4020,7 @@ func (server *apiServer) listAudit(c *gin.Context) {
 		if moduleFilter != "" && moduleFilter != "all" && module != moduleFilter {
 			continue
 		}
+		moduleCounts[module]++
 		items = append(items, gin.H{
 			"id":          id,
 			"timestamp":   createdAt,
@@ -3207,6 +4199,18 @@ func (server *apiServer) fetchAsset(id string) (dbAsset, error) {
 	return asset, err
 }
 
+func (server *apiServer) fetchAssetByMinionID(minionID string) (dbAsset, error) {
+	var asset dbAsset
+	err := server.db.QueryRow(`
+		SELECT id, asset_tag, name, COALESCE(hostname, ''), category, is_compute, COALESCE(serial_number, ''), COALESCE(manufacturer, ''), COALESCE(model, ''), entity_id::text,
+			COALESCE(assigned_to::text, ''), COALESCE(dept_id::text, ''), COALESCE(location_id::text, ''), COALESCE(purchase_date::text, ''), COALESCE(warranty_until::text, ''),
+			status, condition, COALESCE(glpi_id, 0), COALESCE(salt_minion_id, ''), COALESCE(wazuh_agent_id, ''), COALESCE(notes, '')
+		FROM assets WHERE salt_minion_id = $1
+		LIMIT 1
+	`, strings.TrimSpace(minionID)).Scan(&asset.ID, &asset.AssetTag, &asset.Name, &asset.Hostname, &asset.Category, &asset.IsCompute, &asset.SerialNumber, &asset.Manufacturer, &asset.Model, &asset.EntityID, &asset.AssignedTo, &asset.DeptID, &asset.LocationID, &asset.PurchaseDate, &asset.WarrantyUntil, &asset.Status, &asset.Condition, &asset.GLPIID, &asset.SaltMinionID, &asset.WazuhAgentID, &asset.Notes)
+	return asset, err
+}
+
 func (server *apiServer) fetchAssetDetailBlocks(assetID string) (gin.H, gin.H, []gin.H, error) {
 	details := gin.H{}
 	network := gin.H{}
@@ -3301,33 +4305,6 @@ func (server *apiServer) collectAssetAlerts(ctx context.Context, asset dbAsset) 
 		items = append(items, gin.H{"id": id, "source": source, "severity": severity, "title": title, "detail": emptyToNil(detail), "resolved": resolved, "created_at": createdAt})
 	}
 
-	if server.wazuh != nil && server.wazuh.Enabled() && strings.TrimSpace(asset.WazuhAgentID) != "" {
-		remoteAlerts, remoteErr := server.wazuh.ListAgentAlerts(ctx, asset.WazuhAgentID, 10)
-		if remoteErr != nil {
-			items = append(items, gin.H{
-				"id":         "wazuh-sync-error",
-				"source":     "wazuh",
-				"severity":   "warning",
-				"title":      "Wazuh sync failed",
-				"detail":     remoteErr.Error(),
-				"resolved":   false,
-				"created_at": time.Now().UTC(),
-			})
-		} else {
-			for _, alert := range remoteAlerts {
-				items = append(items, gin.H{
-					"id":         alert.ID,
-					"source":     "wazuh",
-					"severity":   alert.Level,
-					"title":      alert.Title,
-					"detail":     emptyToNil(alert.Detail),
-					"resolved":   false,
-					"created_at": alert.CreatedAt,
-				})
-			}
-		}
-	}
-
 	return items, nil
 }
 
@@ -3381,17 +4358,12 @@ func (server *apiServer) buildTerminalPayload(asset dbAsset) (gin.H, error) {
 		if !connected {
 			return nil, fmt.Errorf("salt minion is not connected to the master for this asset")
 		}
-		url = server.salt.BuildTerminalURL(minionID)
-		if strings.Contains(url, "127.0.0.1") || strings.Contains(url, "localhost") {
-			publicHost := strings.TrimSpace(server.config.SaltMasterHost)
-			if publicHost != "" {
-				url = strings.ReplaceAll(url, "127.0.0.1", publicHost)
-				url = strings.ReplaceAll(url, "localhost", publicHost)
-			}
-		}
 	}
 	if url == "" {
-		base := strings.TrimRight(server.config.FrontendOrigin, "/")
+		base := strings.TrimRight(server.config.PublicServerURL, "/")
+		if base == "" {
+			base = strings.TrimRight(server.config.FrontendOrigin, "/")
+		}
 		url = fmt.Sprintf("%s/terminal/%s", base, minionID)
 	}
 	return gin.H{"url": url, "minion_id": minionID}, nil
@@ -3481,6 +4453,15 @@ func websocketSubprotocols(request *http.Request) []string {
 func selectChatSubprotocol(request *http.Request) string {
 	for _, protocol := range websocketSubprotocols(request) {
 		if protocol == "itms.chat.v1" {
+			return protocol
+		}
+	}
+	return ""
+}
+
+func selectAnnouncementSubprotocol(request *http.Request) string {
+	for _, protocol := range websocketSubprotocols(request) {
+		if protocol == "itms.announcements.v1" {
 			return protocol
 		}
 	}
@@ -3739,6 +4720,307 @@ func (server *apiServer) recordOperationalAlert(asset dbAsset, fallbackUserID st
 		INSERT INTO alerts (user_id, device_id, source, severity, title, detail, acknowledged, resolved, created_at)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5, NULLIF($6, ''), FALSE, FALSE, NOW())
 	`, alertUserID, asset.ID, source, severity, title, strings.TrimSpace(detail))
+}
+
+func normalizeSecurityAlertSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "salt", "salt_patch", "patch":
+		return "patch"
+	case "openscap", "open_scap", "hardening":
+		return "openscap"
+	case "clamav", "clam", "clamwin", "clamscan":
+		return "clamav"
+	case "inotify", "inotifywait", "file_integrity", "fim":
+		return "inotify"
+	case "terminal", "terminal_session":
+		return "terminal"
+	default:
+		return strings.ToLower(strings.TrimSpace(source))
+	}
+}
+
+func parseInventoryReportTime(value string) time.Time {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Now().UTC()
+	}
+	parsed, err := time.Parse(time.RFC3339, trimmed)
+	if err != nil {
+		return time.Now().UTC()
+	}
+	return parsed.UTC()
+}
+
+func inventorySecurityAlertDetail(report inventorysync.SecurityReport) string {
+	lines := make([]string, 0, 6)
+	if summary := strings.TrimSpace(report.Summary); summary != "" {
+		lines = append(lines, summary)
+	}
+	if detail := strings.TrimSpace(report.Detail); detail != "" {
+		lines = append(lines, detail)
+	}
+	metrics := make([]string, 0, 3)
+	if report.ScannedFileCount > 0 {
+		metrics = append(metrics, fmt.Sprintf("Scanned files: %d", report.ScannedFileCount))
+	}
+	if report.InfectedFileCount > 0 {
+		metrics = append(metrics, fmt.Sprintf("Infected files: %d", report.InfectedFileCount))
+	}
+	if report.ErrorCount > 0 {
+		metrics = append(metrics, fmt.Sprintf("Errors: %d", report.ErrorCount))
+	}
+	if len(metrics) > 0 {
+		lines = append(lines, strings.Join(metrics, " • "))
+	}
+	if len(report.ScannedPaths) > 0 {
+		lines = append(lines, "Paths: "+strings.Join(report.ScannedPaths, ", "))
+	}
+	if len(report.ArtifactFiles) > 0 {
+		lines = append(lines, "Artifacts: "+strings.Join(report.ArtifactFiles, ", "))
+	}
+	if len(report.InfectedFiles) > 0 {
+		infectedFiles := report.InfectedFiles
+		if len(infectedFiles) > 12 {
+			infectedFiles = infectedFiles[:12]
+		}
+		lines = append(lines, "Detected files:\n- "+strings.Join(infectedFiles, "\n- "))
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func inventorySecurityAlertPresentation(report inventorysync.SecurityReport) (string, string, string, string, time.Time) {
+	source := normalizeSecurityAlertSource(report.Source)
+	status := strings.ToLower(strings.TrimSpace(report.Status))
+	severity := strings.ToLower(strings.TrimSpace(report.Severity))
+	title := strings.TrimSpace(report.Title)
+	if severity == "" {
+		switch status {
+		case "infected", "failed":
+			severity = "high"
+		case "error", "warning":
+			severity = "warning"
+		default:
+			severity = "info"
+		}
+	}
+	if title == "" {
+		switch source {
+		case "clamav":
+			switch status {
+			case "infected":
+				title = "ClamAV detected threats"
+			case "error", "failed":
+				title = "ClamAV scan failed"
+			default:
+				title = "ClamAV scan clean"
+			}
+		case "openscap":
+			title = "OpenSCAP hardening report"
+		default:
+			title = strings.TrimSpace(report.Title)
+			if title == "" {
+				title = strings.ToUpper(source) + " report"
+			}
+		}
+	}
+	detail := inventorySecurityAlertDetail(report)
+	if detail == "" {
+		detail = title
+	}
+	return source, severity, title, detail, parseInventoryReportTime(report.ScannedAt)
+}
+
+func (server *apiServer) defaultAlertRecipientID(ctx context.Context) string {
+	var userID string
+	err := server.db.QueryRowContext(ctx, `
+		SELECT u.id::text
+		FROM users u
+		JOIN roles r ON r.id = u.role_id
+		WHERE u.is_active = TRUE AND r.name IN ('super_admin', 'it_team')
+		ORDER BY CASE WHEN r.name = 'super_admin' THEN 0 ELSE 1 END, u.full_name ASC
+		LIMIT 1
+	`).Scan(&userID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(userID)
+}
+
+func (server *apiServer) fetchAssetByTag(ctx context.Context, assetTag string) (dbAsset, error) {
+	var asset dbAsset
+	err := server.db.QueryRowContext(ctx, `
+		SELECT id, asset_tag, name, COALESCE(hostname, ''), category, is_compute, COALESCE(serial_number, ''), COALESCE(manufacturer, ''), COALESCE(model, ''), entity_id::text,
+			COALESCE(assigned_to::text, ''), COALESCE(dept_id::text, ''), COALESCE(location_id::text, ''), COALESCE(purchase_date::text, ''), COALESCE(warranty_until::text, ''),
+			status, condition, COALESCE(glpi_id, 0), COALESCE(salt_minion_id, ''), COALESCE(wazuh_agent_id, ''), COALESCE(notes, '')
+		FROM assets
+		WHERE asset_tag = $1
+		LIMIT 1
+	`, strings.TrimSpace(assetTag)).Scan(&asset.ID, &asset.AssetTag, &asset.Name, &asset.Hostname, &asset.Category, &asset.IsCompute, &asset.SerialNumber, &asset.Manufacturer, &asset.Model, &asset.EntityID, &asset.AssignedTo, &asset.DeptID, &asset.LocationID, &asset.PurchaseDate, &asset.WarrantyUntil, &asset.Status, &asset.Condition, &asset.GLPIID, &asset.SaltMinionID, &asset.WazuhAgentID, &asset.Notes)
+	return asset, err
+}
+
+func (server *apiServer) resolveInventorySecurityAsset(ctx context.Context, asset inventorysync.Asset) (dbAsset, error) {
+	return server.fetchAssetByTag(ctx, asset.AssetTag)
+}
+
+func (server *apiServer) resolveExistingAssetAlert(ctx context.Context, assetID string, source string, title string, detail string) string {
+	var alertID string
+	err := server.db.QueryRowContext(ctx, `
+		SELECT id::text
+		FROM asset_alerts
+		WHERE asset_id = $1::uuid
+		  AND lower(source) = lower($2)
+		  AND lower(title) = lower($3)
+		  AND COALESCE(detail, '') = $4
+		  AND is_resolved = FALSE
+		  AND created_at >= NOW() - INTERVAL '20 hours'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, assetID, source, title, strings.TrimSpace(detail)).Scan(&alertID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(alertID)
+}
+
+func (server *apiServer) resolveExistingUserAlert(ctx context.Context, userID string, assetID string, source string, title string, detail string) string {
+	var alertID string
+	err := server.db.QueryRowContext(ctx, `
+		SELECT id::text
+		FROM alerts
+		WHERE user_id = $1::uuid
+		  AND device_id = $2::uuid
+		  AND lower(source) = lower($3)
+		  AND lower(title) = lower($4)
+		  AND COALESCE(detail, '') = $5
+		  AND resolved = FALSE
+		  AND created_at >= NOW() - INTERVAL '20 hours'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, userID, assetID, source, title, strings.TrimSpace(detail)).Scan(&alertID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(alertID)
+}
+
+func (server *apiServer) persistInventorySecurityReports(ctx context.Context, asset inventorysync.Asset) error {
+	if len(asset.SecurityReports) == 0 {
+		return nil
+	}
+	resolvedAsset, err := server.resolveInventorySecurityAsset(ctx, asset)
+	if err != nil {
+		return err
+	}
+	for _, report := range asset.SecurityReports {
+		source, severity, title, detail, createdAt := inventorySecurityAlertPresentation(report)
+		if strings.TrimSpace(source) == "" || strings.TrimSpace(title) == "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(report.Status))
+		if source == "clamav" && status == "clean" {
+			_, _ = server.db.ExecContext(ctx, `UPDATE asset_alerts SET is_resolved = TRUE WHERE asset_id = $1::uuid AND lower(source) = 'clamav' AND is_resolved = FALSE`, resolvedAsset.ID)
+			_, _ = server.db.ExecContext(ctx, `UPDATE alerts SET resolved = TRUE WHERE device_id = $1::uuid AND lower(source) = 'clamav' AND resolved = FALSE`, resolvedAsset.ID)
+		}
+		if server.resolveExistingAssetAlert(ctx, resolvedAsset.ID, source, title, detail) == "" {
+			if _, err := server.db.ExecContext(ctx, `
+				INSERT INTO asset_alerts (asset_id, source, severity, title, detail, is_resolved, created_at)
+				VALUES ($1::uuid, $2, $3, $4, NULLIF($5, ''), FALSE, $6)
+			`, resolvedAsset.ID, source, severity, title, strings.TrimSpace(detail), createdAt); err != nil {
+				return err
+			}
+		}
+		alertUserID := strings.TrimSpace(resolvedAsset.AssignedTo)
+		if alertUserID == "" {
+			alertUserID = server.defaultAlertRecipientID(ctx)
+		}
+		if alertUserID == "" {
+			continue
+		}
+		if server.resolveExistingUserAlert(ctx, alertUserID, resolvedAsset.ID, source, title, detail) != "" {
+			continue
+		}
+		if _, err := server.db.ExecContext(ctx, `
+			INSERT INTO alerts (user_id, device_id, source, severity, title, detail, acknowledged, resolved, created_at)
+			VALUES ($1::uuid, $2::uuid, $3, $4, $5, NULLIF($6, ''), FALSE, FALSE, $7)
+		`, alertUserID, resolvedAsset.ID, source, severity, title, strings.TrimSpace(detail), createdAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func wazuhAlertSeverity(level string) string {
+	value := strings.ToLower(strings.TrimSpace(level))
+	switch value {
+	case "critical", "high", "12", "13", "14", "15", "16":
+		return "high"
+	case "warning", "medium", "8", "9", "10", "11":
+		return "medium"
+	case "low", "info", "1", "2", "3", "4", "5", "6", "7":
+		return "warning"
+	default:
+		return "warning"
+	}
+}
+
+func parseRemoteAlertTime(value string) time.Time {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Now().UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
+		return parsed.UTC()
+	}
+	if parsed, err := time.Parse("2006-01-02T15:04:05-07:00", trimmed); err == nil {
+		return parsed.UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (server *apiServer) persistInventoryWazuhFindings(ctx context.Context, asset inventorysync.Asset) error {
+	if server.wazuh == nil || !server.wazuh.Enabled() || strings.TrimSpace(asset.WazuhAgentID) == "" {
+		return nil
+	}
+	resolvedAsset, err := server.resolveInventorySecurityAsset(ctx, asset)
+	if err != nil {
+		return err
+	}
+	findings, err := server.wazuh.ListAgentAlerts(ctx, strings.TrimSpace(asset.WazuhAgentID), 5)
+	if err != nil {
+		return err
+	}
+	for _, finding := range findings {
+		title := strings.TrimSpace(finding.Title)
+		if title == "" {
+			continue
+		}
+		detail := strings.TrimSpace(finding.Detail)
+		severity := wazuhAlertSeverity(finding.Level)
+		createdAt := parseRemoteAlertTime(finding.CreatedAt)
+		if server.resolveExistingAssetAlert(ctx, resolvedAsset.ID, "wazuh", title, detail) == "" {
+			if _, err := server.db.ExecContext(ctx, `
+				INSERT INTO asset_alerts (asset_id, source, severity, title, detail, is_resolved, created_at)
+				VALUES ($1::uuid, 'wazuh', $2, $3, NULLIF($4, ''), FALSE, $5)
+			`, resolvedAsset.ID, severity, title, detail, createdAt); err != nil {
+				return err
+			}
+		}
+		alertUserID := strings.TrimSpace(resolvedAsset.AssignedTo)
+		if alertUserID == "" {
+			alertUserID = server.defaultAlertRecipientID(ctx)
+		}
+		if alertUserID == "" || server.resolveExistingUserAlert(ctx, alertUserID, resolvedAsset.ID, "wazuh", title, detail) != "" {
+			continue
+		}
+		if _, err := server.db.ExecContext(ctx, `
+			INSERT INTO alerts (user_id, device_id, source, severity, title, detail, acknowledged, resolved, created_at)
+			VALUES ($1::uuid, $2::uuid, 'wazuh', $3, $4, NULLIF($5, ''), FALSE, FALSE, $6)
+		`, alertUserID, resolvedAsset.ID, severity, title, detail, createdAt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func userIsActive(user dbUser) bool { return user.IsActive }

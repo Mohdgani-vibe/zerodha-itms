@@ -7,11 +7,13 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"itms/backend/internal/platform/authn"
 )
 
 const (
-	defaultJWTSecret        = "change-me-in-production"
-	defaultAdminPassword    = "ChangeMe123!"
+	defaultJWTSecret         = "change-me-in-production"
+	defaultAdminPassword     = "replace-with-a-strong-admin-password"
 	minimumRecommendedJWTLen = 32
 )
 
@@ -114,9 +116,9 @@ func LoadConfig() (Config, error) {
 		GoogleClientSecret:               os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleRedirectURL:                getEnv("GOOGLE_REDIRECT_URL", "http://localhost:3001/api/auth/google/callback"),
 		GoogleHostedDomain:               getEnv("GOOGLE_HOSTED_DOMAIN", "zerodha.com"),
-		DefaultAdminEmail:                getEnv("DEFAULT_ADMIN_EMAIL", "gani@zerodha.com"),
-		DefaultAdminPassword:             getEnv("DEFAULT_ADMIN_PASSWORD", "ChangeMe123!"),
-		DefaultAdminName:                 getEnv("DEFAULT_ADMIN_NAME", "Gani"),
+		DefaultAdminEmail:                getEnv("DEFAULT_ADMIN_EMAIL", "admin@zerodha.com"),
+		DefaultAdminPassword:             getEnv("DEFAULT_ADMIN_PASSWORD", defaultAdminPassword),
+		DefaultAdminName:                 getEnv("DEFAULT_ADMIN_NAME", "ITMS Admin"),
 	}, nil
 }
 
@@ -139,7 +141,10 @@ func (config Config) SecurityWarnings() []string {
 		warnings = append(warnings, "JWT_SECRET is shorter than 32 characters; use a longer random secret")
 	}
 	if strings.TrimSpace(config.DefaultAdminPassword) == defaultAdminPassword {
-		warnings = append(warnings, "DEFAULT_ADMIN_PASSWORD is still using the seeded default; rotate it immediately")
+		warnings = append(warnings, "DEFAULT_ADMIN_PASSWORD is still using the placeholder default; set a strong value before exposing the service")
+	}
+	if err := authn.ValidatePasswordStrength(config.DefaultAdminPassword); err != nil {
+		warnings = append(warnings, fmt.Sprintf("DEFAULT_ADMIN_PASSWORD does not satisfy password policy: %v", err))
 	}
 	if config.InventorySyncEnabled && strings.TrimSpace(config.InventoryIngestToken) == "" {
 		warnings = append(warnings, "INVENTORY_SYNC_ENABLED is true but INVENTORY_INGEST_TOKEN is empty; ingest endpoint cannot be safely exposed")
@@ -171,7 +176,10 @@ func (config Config) SecurityErrors() []string {
 		errors = append(errors, "JWT_SECRET must be set to a non-default random value with at least 32 characters")
 	}
 	if strings.TrimSpace(config.DefaultAdminPassword) == "" || strings.TrimSpace(config.DefaultAdminPassword) == defaultAdminPassword {
-		errors = append(errors, "DEFAULT_ADMIN_PASSWORD must be changed from the seeded default")
+		errors = append(errors, "DEFAULT_ADMIN_PASSWORD must be changed from the placeholder default")
+	}
+	if err := authn.ValidatePasswordStrength(config.DefaultAdminPassword); err != nil {
+		errors = append(errors, fmt.Sprintf("DEFAULT_ADMIN_PASSWORD must satisfy password policy: %v", err))
 	}
 	if config.InventorySyncEnabled && strings.TrimSpace(config.InventoryIngestToken) == "" {
 		errors = append(errors, "INVENTORY_INGEST_TOKEN is required when inventory sync is enabled")

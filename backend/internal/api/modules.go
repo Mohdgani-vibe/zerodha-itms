@@ -57,7 +57,9 @@ func (server *apiServer) listMyAlerts(c *gin.Context) {
 
 func alertSourceKeyExpr(column string) string {
 	return `CASE
-		WHEN lower(` + column + `) IN ('openscap', 'salt', 'salt_patch', 'patch') THEN 'salt_patch'
+		WHEN lower(` + column + `) IN ('salt', 'salt_patch', 'patch') THEN 'patch'
+		WHEN lower(` + column + `) IN ('openscap', 'open_scap', 'hardening') THEN 'openscap'
+		WHEN lower(` + column + `) IN ('clamav', 'clam', 'clamwin', 'clamscan') THEN 'clamav'
 		WHEN lower(` + column + `) IN ('terminal', 'terminal_session') THEN 'terminal'
 		ELSE lower(` + column + `)
 	END`
@@ -65,7 +67,9 @@ func alertSourceKeyExpr(column string) string {
 
 func alertSourceLabelExpr(column string) string {
 	return `CASE
-		WHEN lower(` + column + `) IN ('openscap', 'salt', 'salt_patch', 'patch') THEN 'Salt Patch'
+		WHEN lower(` + column + `) IN ('salt', 'salt_patch', 'patch') THEN 'Patch'
+		WHEN lower(` + column + `) IN ('openscap', 'open_scap', 'hardening') THEN 'OpenSCAP Hardening'
+		WHEN lower(` + column + `) IN ('clamav', 'clam', 'clamwin', 'clamscan') THEN 'ClamAV'
 		WHEN lower(` + column + `) IN ('terminal', 'terminal_session') THEN 'Terminal'
 		ELSE initcap(replace(lower(` + column + `), '_', ' '))
 	END`
@@ -276,19 +280,58 @@ func (server *apiServer) resolveAlert(c *gin.Context) {
 func (server *apiServer) listAnnouncements(c *gin.Context) {
 	page, pageSize, paginate := parsePaginationRequest(c, 12)
 	audienceFilters := c.QueryArray("audience")
+	normalizedAudiences := make([]string, 0, len(audienceFilters))
 	audienceLookup := map[string]struct{}{}
 	for _, audience := range audienceFilters {
 		audience = strings.TrimSpace(audience)
 		if audience != "" {
+			if _, exists := audienceLookup[audience]; exists {
+				continue
+			}
 			audienceLookup[audience] = struct{}{}
+			normalizedAudiences = append(normalizedAudiences, audience)
 		}
 	}
-	rows, err := server.db.Query(`
-		SELECT a.id, a.title, a.body, a.audience, a.urgent, a.created_at, u.full_name
+	whereClauses := make([]string, 0, 1)
+	args := make([]any, 0, len(normalizedAudiences)+2)
+	argIndex := 1
+	if len(normalizedAudiences) > 0 {
+		placeholders := make([]string, 0, len(normalizedAudiences))
+		for _, audience := range normalizedAudiences {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", argIndex))
+			args = append(args, audience)
+			argIndex++
+		}
+		whereClauses = append(whereClauses, "a.audience IN ("+strings.Join(placeholders, ", ")+")")
+	}
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	baseFrom := `
 		FROM announcements a
 		JOIN users u ON u.id = a.author_id
+	`
+
+	var total int
+	if err := server.db.QueryRow(`SELECT COUNT(*) `+baseFrom+whereSQL, args...).Scan(&total); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	queryArgs := append([]any{}, args...)
+	query := `
+		SELECT a.id, a.title, a.body, a.audience, a.urgent, a.created_at, u.full_name
+		` + baseFrom + whereSQL + `
 		ORDER BY a.created_at DESC
-	`)
+	`
+	if paginate {
+		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+		queryArgs = append(queryArgs, pageSize, (page-1)*pageSize)
+	}
+
+	rows, err := server.db.Query(query, queryArgs...)
 	if err != nil {
 		httpx.Error(c, http.StatusInternalServerError, err.Error())
 		return
@@ -304,11 +347,6 @@ func (server *apiServer) listAnnouncements(c *gin.Context) {
 			httpx.Error(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if len(audienceLookup) > 0 {
-			if _, ok := audienceLookup[audience]; !ok {
-				continue
-			}
-		}
 
 		result = append(result, gin.H{
 			"id":         id,
@@ -320,12 +358,15 @@ func (server *apiServer) listAnnouncements(c *gin.Context) {
 			"authorName": authorName,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if !paginate {
 		httpx.JSON(c, http.StatusOK, result)
 		return
 	}
-	start, end := paginationBounds(len(result), page, pageSize)
-	httpx.JSON(c, http.StatusOK, gin.H{"items": result[start:end], "total": len(result), "page": page, "pageSize": pageSize})
+	httpx.JSON(c, http.StatusOK, gin.H{"items": result, "total": total, "page": page, "pageSize": pageSize})
 }
 
 func (server *apiServer) createAnnouncement(c *gin.Context) {
@@ -359,8 +400,68 @@ func (server *apiServer) createAnnouncement(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	server.announcements.publish(strings.TrimSpace(input.Audience), announcementEnvelope{
+		Type:      "announcement_published",
+		ID:        id,
+		Title:     strings.TrimSpace(input.Title),
+		Audience:  strings.TrimSpace(input.Audience),
+		Urgent:    input.Urgent,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
 	middleware.TagAudit(c, middleware.AuditMeta{Action: "announcement_published", TargetType: "announcement", TargetID: id, Detail: input})
 	httpx.Created(c, gin.H{"id": id})
+}
+
+func announcementAudiencesForRole(role string) []string {
+	switch role {
+	case "super_admin", "it_team":
+		return []string{"All Employees", "IT Team", "Super Admin"}
+	default:
+		return []string{"All Employees"}
+	}
+}
+
+func (server *apiServer) announcementWebsocket(c *gin.Context) {
+	rawToken := extractWebSocketBearerToken(c.Request)
+	if rawToken == "" {
+		httpx.Error(c, http.StatusBadRequest, "token is required")
+		return
+	}
+	if !server.websocketOriginAllowed(c.GetHeader("Origin")) {
+		httpx.Error(c, http.StatusForbidden, "origin not allowed")
+		return
+	}
+	claims, err := server.auth.ParseToken(rawToken)
+	if err != nil {
+		httpx.Error(c, http.StatusUnauthorized, "invalid token")
+		return
+	}
+	responseHeader := http.Header{}
+	if protocol := selectAnnouncementSubprotocol(c.Request); protocol != "" {
+		responseHeader.Set("Sec-WebSocket-Protocol", protocol)
+	}
+	upgrader := websocket.Upgrader{CheckOrigin: func(request *http.Request) bool {
+		return server.websocketOriginAllowed(request.Header.Get("Origin"))
+	}}
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, responseHeader)
+	if err != nil {
+		return
+	}
+	audiences := announcementAudiencesForRole(claims.Role)
+	for _, audience := range audiences {
+		server.announcements.subscribe(audience, conn)
+	}
+	defer func() {
+		for _, audience := range audiences {
+			server.announcements.unsubscribe(audience, conn)
+		}
+		_ = conn.Close()
+	}()
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+	}
 }
 
 func (server *apiServer) markAnnouncementRead(c *gin.Context) {
@@ -876,6 +977,44 @@ func (server *apiServer) listStock(c *gin.Context) {
 		return
 	}
 
+	groupRows, err := server.db.Query(`
+		SELECT
+			category,
+			name,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE status IN ('inventory', 'returned')) AS available,
+			COUNT(*) FILTER (WHERE status = 'allocated') AS allocated,
+			COUNT(*) FILTER (WHERE status = 'retired') AS retired,
+			COUNT(*) FILTER (WHERE status = 'returned') AS returned
+		FROM stock_items
+		WHERE `+whereSQL+`
+		GROUP BY category, name
+		ORDER BY COUNT(*) FILTER (WHERE status IN ('inventory', 'returned')) ASC, name ASC
+	`, args...)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer groupRows.Close()
+	groups := make([]gin.H, 0)
+	for groupRows.Next() {
+		var category, name string
+		var groupTotal, groupAvailable, groupAllocated, groupRetired, groupReturned int
+		if err := groupRows.Scan(&category, &name, &groupTotal, &groupAvailable, &groupAllocated, &groupRetired, &groupReturned); err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		groups = append(groups, gin.H{
+			"category":  category,
+			"name":      name,
+			"total":     groupTotal,
+			"available": groupAvailable,
+			"allocated": groupAllocated,
+			"retired":   groupRetired,
+			"returned":  groupReturned,
+		})
+	}
+
 	queryArgs := append([]any{}, args...)
 	query := `
 		SELECT id, item_code, category, name, COALESCE(serial_number, ''), COALESCE(specs, ''), COALESCE(branch_id::text, ''),
@@ -922,7 +1061,7 @@ func (server *apiServer) listStock(c *gin.Context) {
 		httpx.JSON(c, http.StatusOK, result)
 		return
 	}
-	httpx.JSON(c, http.StatusOK, gin.H{"items": result, "total": total, "page": page, "pageSize": pageSize, "summary": summary})
+	httpx.JSON(c, http.StatusOK, gin.H{"items": result, "total": total, "page": page, "pageSize": pageSize, "summary": summary, "groups": groups})
 }
 
 func (server *apiServer) createStockItem(c *gin.Context) {
@@ -1137,17 +1276,28 @@ func (server *apiServer) createMyRequest(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, "type and title are required")
 		return
 	}
+	assigneeID, err := server.resolveRequestRouting(strings.TrimSpace(input.Type), strings.TrimSpace(input.Title), strings.TrimSpace(input.Description))
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	var id string
 	if err := server.db.QueryRow(`
-		INSERT INTO requests (requester_id, type, title, description, status)
-		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), 'pending')
+		INSERT INTO requests (requester_id, assignee_id, type, title, description, status)
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, NULLIF($5, ''), 'pending')
 		RETURNING id
-	`, claims.UserID, strings.TrimSpace(input.Type), strings.TrimSpace(input.Title), strings.TrimSpace(input.Description)).Scan(&id); err != nil {
+	`, claims.UserID, assigneeID, strings.TrimSpace(input.Type), strings.TrimSpace(input.Title), strings.TrimSpace(input.Description)).Scan(&id); err != nil {
 		httpx.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	middleware.TagAudit(c, middleware.AuditMeta{Action: "request_created", TargetType: "request", TargetID: id, Detail: input})
-	httpx.Created(c, gin.H{"id": id, "status": "pending"})
+	auditDetail := gin.H{
+		"type":        strings.TrimSpace(input.Type),
+		"title":       strings.TrimSpace(input.Title),
+		"description": strings.TrimSpace(input.Description),
+		"assigneeId":  assigneeID,
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "request_created", TargetType: "request", TargetID: id, Detail: auditDetail})
+	httpx.Created(c, gin.H{"id": id, "status": "pending", "assigneeId": assigneeID})
 }
 
 func (server *apiServer) getMyRequest(c *gin.Context) {
@@ -1357,6 +1507,10 @@ func (server *apiServer) listRequests(c *gin.Context) {
 
 	filtered := make([]gin.H, 0, len(requestRows))
 	for _, item := range requestRows {
+		comments := commentLookup[item.id]
+		if comments == nil {
+			comments = []gin.H{}
+		}
 		filtered = append(filtered, gin.H{
 			"id":          item.id,
 			"type":        item.kind,
@@ -1368,7 +1522,7 @@ func (server *apiServer) listRequests(c *gin.Context) {
 			"updatedAt":   item.updatedAt,
 			"requester":   gin.H{"id": item.requesterID, "fullName": item.requesterName},
 			"assignee":    gin.H{"id": emptyToNullString(item.assigneeID), "fullName": item.assigneeName},
-			"comments":    commentLookup[item.id],
+			"comments":    comments,
 		})
 	}
 
@@ -1468,6 +1622,10 @@ func (server *apiServer) assignRequest(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, "assigneeId is required")
 		return
 	}
+	if err := server.validateTicketAssignee(strings.TrimSpace(input.AssigneeID)); err != nil {
+		httpx.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	result, err := server.db.Exec(`
 		UPDATE requests SET assignee_id = $2::uuid, updated_at = NOW() WHERE id = $1::uuid
 	`, c.Param("id"), strings.TrimSpace(input.AssigneeID))
@@ -1550,17 +1708,68 @@ func (server *apiServer) listChatChannels(c *gin.Context) {
 		return
 	}
 	page, pageSize, paginate := parsePaginationRequest(c, 100)
+	searchQuery := strings.ToLower(strings.TrimSpace(c.Query("search")))
+	kindFilter := strings.ToLower(strings.TrimSpace(c.Query("kind")))
 	if err := server.ensureChatChannelsForUser(claims); err != nil {
 		httpx.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	rows, err := server.db.Query(`
-		SELECT c.id, c.name, c.kind
+	whereClauses := []string{"m.user_id = $1::uuid", "(c.status <> 'closed' OR c.closed_at IS NULL OR c.closed_at >= NOW() - INTERVAL '7 days')"}
+	args := []any{claims.UserID}
+	argIndex := 2
+	if kindFilter != "" && kindFilter != "all" {
+		whereClauses = append(whereClauses, fmt.Sprintf("c.kind = $%d", argIndex))
+		args = append(args, kindFilter)
+		argIndex++
+	}
+	if searchQuery != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf(`(
+			lower(c.name) LIKE $%d
+			OR EXISTS (
+				SELECT 1
+				FROM chat_members cm_search
+				JOIN users u_search ON u_search.id = cm_search.user_id
+				WHERE cm_search.channel_id = c.id AND lower(u_search.full_name) LIKE $%d
+			)
+			OR EXISTS (
+				SELECT 1
+				FROM chat_messages msg_search
+				WHERE msg_search.channel_id = c.id AND lower(msg_search.body) LIKE $%d
+			)
+		)`, argIndex, argIndex, argIndex))
+		args = append(args, "%"+searchQuery+"%")
+		argIndex++
+	}
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	var total int
+	if err := server.db.QueryRow(`
+		SELECT COUNT(DISTINCT c.id)
 		FROM chat_channels c
 		JOIN chat_members m ON m.channel_id = c.id
-		WHERE m.user_id = $1::uuid
-		ORDER BY c.created_at DESC
-	`, claims.UserID)
+		WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	queryArgs := append([]any{}, args...)
+	query := `
+		SELECT c.id, c.name, c.kind, c.created_at, c.created_by, COALESCE(creator.full_name, ''), c.primary_owner_id, COALESCE(owner.full_name, ''),
+			c.backup_owner_id, COALESCE(backup_owner.full_name, ''), c.status, c.closed_at, c.linked_request_id, COALESCE(r.ticket_number, ''), COALESCE(r.status, '')
+		FROM chat_channels c
+		JOIN chat_members m ON m.channel_id = c.id
+		LEFT JOIN users creator ON creator.id = c.created_by
+		LEFT JOIN users owner ON owner.id = c.primary_owner_id
+		LEFT JOIN users backup_owner ON backup_owner.id = c.backup_owner_id
+		LEFT JOIN requests r ON r.id = c.linked_request_id
+		WHERE ` + whereSQL + `
+		ORDER BY COALESCE((SELECT MAX(created_at) FROM chat_messages WHERE channel_id = c.id), c.created_at) DESC, c.created_at DESC
+	`
+	if paginate {
+		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+		queryArgs = append(queryArgs, pageSize, (page-1)*pageSize)
+	}
+	rows, err := server.db.Query(query, queryArgs...)
 	if err != nil {
 		httpx.Error(c, http.StatusInternalServerError, err.Error())
 		return
@@ -1570,7 +1779,14 @@ func (server *apiServer) listChatChannels(c *gin.Context) {
 	channels := make([]gin.H, 0)
 	for rows.Next() {
 		var id, name, kind string
-		if err := rows.Scan(&id, &name, &kind); err != nil {
+		var createdAt time.Time
+		var createdByID, createdByName sql.NullString
+		var primaryOwnerID, primaryOwnerName sql.NullString
+		var backupOwnerID, backupOwnerName sql.NullString
+		var status string
+		var closedAt sql.NullTime
+		var linkedRequestID, linkedTicketNumber, linkedRequestStatus sql.NullString
+		if err := rows.Scan(&id, &name, &kind, &createdAt, &createdByID, &createdByName, &primaryOwnerID, &primaryOwnerName, &backupOwnerID, &backupOwnerName, &status, &closedAt, &linkedRequestID, &linkedTicketNumber, &linkedRequestStatus); err != nil {
 			httpx.Error(c, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1597,37 +1813,128 @@ func (server *apiServer) listChatChannels(c *gin.Context) {
 			members = append(members, gin.H{"id": memberID, "fullName": fullName, "role": role})
 		}
 		memberRows.Close()
-		channels = append(channels, gin.H{"id": id, "name": name, "kind": kind, "members": members})
+		var messageCount int
+		if err := server.db.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE channel_id = $1::uuid`, id).Scan(&messageCount); err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		channel := gin.H{
+			"id":           id,
+			"name":         name,
+			"kind":         kind,
+			"members":      members,
+			"createdAt":    createdAt.UTC().Format(time.RFC3339Nano),
+			"status":       status,
+			"messageCount": messageCount,
+		}
+		if closedAt.Valid {
+			channel["closedAt"] = closedAt.Time.UTC().Format(time.RFC3339Nano)
+		}
+		if createdByID.Valid {
+			channel["createdBy"] = gin.H{"id": createdByID.String, "fullName": strings.TrimSpace(createdByName.String)}
+		}
+		if primaryOwnerID.Valid {
+			channel["primaryOwner"] = gin.H{"id": primaryOwnerID.String, "fullName": strings.TrimSpace(primaryOwnerName.String)}
+		}
+		if backupOwnerID.Valid {
+			channel["backupOwner"] = gin.H{"id": backupOwnerID.String, "fullName": strings.TrimSpace(backupOwnerName.String)}
+		}
+		if linkedRequestID.Valid {
+			channel["linkedRequest"] = gin.H{"id": linkedRequestID.String, "ticketNumber": strings.TrimSpace(linkedTicketNumber.String), "status": strings.TrimSpace(linkedRequestStatus.String)}
+		}
+		var latestBody, latestAuthorName sql.NullString
+		var latestCreatedAt time.Time
+		err = server.db.QueryRow(`
+			SELECT cm.body, cm.created_at, COALESCE(u.full_name, '')
+			FROM chat_messages cm
+			LEFT JOIN users u ON u.id = cm.author_id
+			WHERE cm.channel_id = $1::uuid
+			ORDER BY cm.created_at DESC
+			LIMIT 1
+		`, id).Scan(&latestBody, &latestCreatedAt, &latestAuthorName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err == nil {
+			channel["latestMessage"] = gin.H{
+				"body":       latestBody.String,
+				"createdAt":  latestCreatedAt.UTC().Format(time.RFC3339Nano),
+				"authorName": strings.TrimSpace(latestAuthorName.String),
+			}
+		}
+		channels = append(channels, channel)
 	}
 	if !paginate {
 		httpx.JSON(c, http.StatusOK, channels)
 		return
 	}
-	start, end := paginationBounds(len(channels), page, pageSize)
 	httpx.JSON(c, http.StatusOK, gin.H{
-		"items":    channels[start:end],
-		"total":    len(channels),
+		"items":    channels,
+		"total":    total,
 		"page":     page,
 		"pageSize": pageSize,
 	})
 }
 
 func (server *apiServer) createChatChannel(c *gin.Context) {
-	if !server.requireRoles(c, "super_admin", "it_team") {
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	claims := middleware.CurrentClaims(c)
-	var input struct {
-		Name      string   `json:"name"`
-		Kind      string   `json:"kind"`
-		MemberIDs []string `json:"memberIds"`
+	if claims.Role != "super_admin" && claims.Role != "it_team" && claims.Role != "employee" {
+		httpx.Error(c, http.StatusForbidden, "forbidden")
+		return
 	}
-	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.Kind) == "" {
+	var input struct {
+		Name           string   `json:"name"`
+		Kind           string   `json:"kind"`
+		MemberIDs      []string `json:"memberIds"`
+		InitialMessage string   `json:"initialMessage"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
 		httpx.Error(c, http.StatusBadRequest, "invalid chat channel payload")
 		return
 	}
-	if strings.TrimSpace(input.Name) == "" {
+	input.Name = strings.TrimSpace(input.Name)
+	input.Kind = strings.TrimSpace(input.Kind)
+	input.InitialMessage = strings.TrimSpace(input.InitialMessage)
+	if input.Name == "" {
 		input.Name = "IT Channel"
+	}
+	if claims.Role == "employee" {
+		enabled, err := server.chatAutoCreateEnabled()
+		if err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !enabled {
+			httpx.Error(c, http.StatusForbidden, "chat creation is disabled")
+			return
+		}
+		if input.Kind == "" {
+			input.Kind = "support"
+		}
+		input.MemberIDs = nil
+	} else if input.Kind == "" {
+		httpx.Error(c, http.StatusBadRequest, "invalid chat channel payload")
+		return
+	}
+	routedMemberID, err := server.resolveChatRouting(strings.TrimSpace(input.Name))
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if routedMemberID != "" {
+		if err := server.validateChatMemberAssignee(routedMemberID); err != nil {
+			httpx.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	primaryOwnerID := strings.TrimSpace(routedMemberID)
+	if primaryOwnerID == "" && (claims.Role == "it_team" || claims.Role == "super_admin") {
+		primaryOwnerID = claims.UserID
 	}
 
 	tx, err := server.db.Begin()
@@ -1639,19 +1946,28 @@ func (server *apiServer) createChatChannel(c *gin.Context) {
 
 	var channelID string
 	if err := tx.QueryRow(`
-		INSERT INTO chat_channels (name, kind, created_by)
-		VALUES ($1, $2, $3::uuid)
+		INSERT INTO chat_channels (name, kind, created_by, primary_owner_id)
+		VALUES ($1, $2, $3::uuid, NULLIF($4, '')::uuid)
 		RETURNING id
-	`, strings.TrimSpace(input.Name), strings.TrimSpace(input.Kind), claims.UserID).Scan(&channelID); err != nil {
+	`, strings.TrimSpace(input.Name), strings.TrimSpace(input.Kind), claims.UserID, primaryOwnerID).Scan(&channelID); err != nil {
 		httpx.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	memberIDs := append([]string{claims.UserID}, input.MemberIDs...)
+	if routedMemberID != "" {
+		memberIDs = append(memberIDs, routedMemberID)
+	}
 	seen := map[string]struct{}{}
 	for _, memberID := range memberIDs {
 		memberID = strings.TrimSpace(memberID)
 		if memberID == "" {
 			continue
+		}
+		if memberID != claims.UserID {
+			if err := server.validateChatMemberAssignee(memberID); err != nil {
+				httpx.Error(c, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		if _, ok := seen[memberID]; ok {
 			continue
@@ -1662,12 +1978,584 @@ func (server *apiServer) createChatChannel(c *gin.Context) {
 			return
 		}
 	}
+	if input.InitialMessage != "" {
+		if _, err := tx.Exec(`
+			INSERT INTO chat_messages (channel_id, author_id, body)
+			VALUES ($1::uuid, $2::uuid, $3)
+		`, channelID, claims.UserID, input.InitialMessage); err != nil {
+			httpx.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		httpx.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_created", TargetType: "chat_channel", TargetID: channelID, Detail: input})
-	httpx.Created(c, gin.H{"id": channelID})
+	auditDetail := gin.H{
+		"name":           strings.TrimSpace(input.Name),
+		"kind":           strings.TrimSpace(input.Kind),
+		"memberIds":      input.MemberIDs,
+		"initialMessage": input.InitialMessage,
+		"routedMemberId": routedMemberID,
+		"primaryOwnerId": emptyToNullString(primaryOwnerID),
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_created", TargetType: "chat_channel", TargetID: channelID, Detail: auditDetail})
+	httpx.Created(c, gin.H{"id": channelID, "routedMemberId": routedMemberID, "primaryOwnerId": emptyToNullString(primaryOwnerID)})
+}
+
+func (server *apiServer) addChatChannelMembers(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin", "it_team") {
+		return
+	}
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	channelID := strings.TrimSpace(c.Param("id"))
+	var input struct {
+		MemberIDs []string `json:"memberIds"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		httpx.Error(c, http.StatusBadRequest, "invalid chat channel payload")
+		return
+	}
+	var exists bool
+	if err := server.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM chat_channels WHERE id = $1::uuid)`, channelID).Scan(&exists); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !exists {
+		httpx.Error(c, http.StatusNotFound, "chat channel not found")
+		return
+	}
+	if claims.Role == "it_team" {
+		allowed, err := server.userIsChatMember(c.Request.Context(), channelID, claims.UserID)
+		if err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !allowed {
+			httpx.Error(c, http.StatusForbidden, "only chat members or super admin can add teammates")
+			return
+		}
+	}
+	var channelStatus string
+	if err := server.db.QueryRow(`SELECT status FROM chat_channels WHERE id = $1::uuid`, channelID).Scan(&channelStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "chat channel not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if channelStatus == "closed" {
+		httpx.Error(c, http.StatusBadRequest, "reopen chat before adding teammates")
+		return
+	}
+	memberIDs := make([]string, 0, len(input.MemberIDs))
+	seen := map[string]struct{}{}
+	for _, memberID := range input.MemberIDs {
+		memberID = strings.TrimSpace(memberID)
+		if memberID == "" {
+			continue
+		}
+		if err := server.validateChatMemberAssignee(memberID); err != nil {
+			httpx.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if _, ok := seen[memberID]; ok {
+			continue
+		}
+		seen[memberID] = struct{}{}
+		memberIDs = append(memberIDs, memberID)
+	}
+	if len(memberIDs) == 0 {
+		httpx.Error(c, http.StatusBadRequest, "select at least one teammate")
+		return
+	}
+	added := 0
+	for _, memberID := range memberIDs {
+		result, err := server.db.Exec(`INSERT INTO chat_members (channel_id, user_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, channelID, memberID)
+		if err != nil {
+			httpx.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err == nil {
+			added += int(rowsAffected)
+		}
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_members_added", TargetType: "chat_channel", TargetID: channelID, Detail: gin.H{"memberIds": memberIDs, "added": added}})
+	httpx.JSON(c, http.StatusOK, gin.H{"added": added})
+}
+
+func (server *apiServer) removeChatChannelMember(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin", "it_team") {
+		return
+	}
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	channelID := strings.TrimSpace(c.Param("id"))
+	userID := strings.TrimSpace(c.Param("userId"))
+	if channelID == "" || userID == "" {
+		httpx.Error(c, http.StatusBadRequest, "invalid chat member target")
+		return
+	}
+	if claims.Role == "it_team" {
+		allowed, err := server.userIsChatMember(c.Request.Context(), channelID, claims.UserID)
+		if err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !allowed {
+			httpx.Error(c, http.StatusForbidden, "only chat members or super admin can remove teammates")
+			return
+		}
+	}
+	var targetRole string
+	err := server.db.QueryRow(`
+		SELECT r.name
+		FROM chat_members cm
+		JOIN users u ON u.id = cm.user_id
+		JOIN roles r ON r.id = u.role_id
+		WHERE cm.channel_id = $1::uuid AND cm.user_id = $2::uuid
+	`, channelID, userID).Scan(&targetRole)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "chat member not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if targetRole != "it_team" && targetRole != "super_admin" {
+		httpx.Error(c, http.StatusBadRequest, "only IT owners can be removed from chat routing")
+		return
+	}
+	var privilegedCount int
+	if err := server.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM chat_members cm
+		JOIN users u ON u.id = cm.user_id
+		JOIN roles r ON r.id = u.role_id
+		WHERE cm.channel_id = $1::uuid AND r.name IN ('super_admin', 'it_team')
+	`, channelID).Scan(&privilegedCount); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if privilegedCount <= 1 {
+		httpx.Error(c, http.StatusBadRequest, "add another IT owner before removing the last one")
+		return
+	}
+	if _, err := server.db.Exec(`UPDATE chat_channels SET primary_owner_id = NULL WHERE id = $1::uuid AND primary_owner_id = $2::uuid`, channelID, userID); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := server.db.Exec(`UPDATE chat_channels SET backup_owner_id = NULL WHERE id = $1::uuid AND backup_owner_id = $2::uuid`, channelID, userID); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	result, err := server.db.Exec(`DELETE FROM chat_members WHERE channel_id = $1::uuid AND user_id = $2::uuid`, channelID, userID)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rowsAffected == 0 {
+		httpx.Error(c, http.StatusNotFound, "chat member not found")
+		return
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_member_removed", TargetType: "chat_channel", TargetID: channelID, Detail: gin.H{"userId": userID}})
+	httpx.JSON(c, http.StatusOK, gin.H{"removed": rowsAffected})
+}
+
+func (server *apiServer) updateChatChannelOwner(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin", "it_team") {
+		return
+	}
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	channelID := strings.TrimSpace(c.Param("id"))
+	var input struct {
+		OwnerID       *string `json:"ownerId"`
+		BackupOwnerID *string `json:"backupOwnerId"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		httpx.Error(c, http.StatusBadRequest, "invalid chat owner payload")
+		return
+	}
+	if input.OwnerID == nil && input.BackupOwnerID == nil {
+		httpx.Error(c, http.StatusBadRequest, "select a primary or backup owner")
+		return
+	}
+	ownerID := ""
+	if input.OwnerID != nil {
+		ownerID = strings.TrimSpace(*input.OwnerID)
+		if ownerID == "" {
+			httpx.Error(c, http.StatusBadRequest, "select a primary owner")
+			return
+		}
+	}
+	backupOwnerID := ""
+	if input.BackupOwnerID != nil {
+		backupOwnerID = strings.TrimSpace(*input.BackupOwnerID)
+	}
+	if claims.Role == "it_team" {
+		allowed, err := server.userIsChatMember(c.Request.Context(), channelID, claims.UserID)
+		if err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !allowed {
+			httpx.Error(c, http.StatusForbidden, "only chat members or super admin can transfer ownership")
+			return
+		}
+	}
+	var channelStatus string
+	if err := server.db.QueryRow(`SELECT status FROM chat_channels WHERE id = $1::uuid`, channelID).Scan(&channelStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "chat channel not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if channelStatus == "closed" {
+		httpx.Error(c, http.StatusBadRequest, "reopen chat before changing the primary owner")
+		return
+	}
+	validateOwnerMember := func(candidateID string, label string) error {
+		if strings.TrimSpace(candidateID) == "" {
+			return nil
+		}
+		if err := server.validateChatMemberAssignee(candidateID); err != nil {
+			return err
+		}
+		var ownerRole string
+		err := server.db.QueryRow(`
+			SELECT r.name
+			FROM chat_members cm
+			JOIN users u ON u.id = cm.user_id
+			JOIN roles r ON r.id = u.role_id
+			WHERE cm.channel_id = $1::uuid AND cm.user_id = $2::uuid
+		`, channelID, candidateID).Scan(&ownerRole)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%s must already be a chat member", label)
+			}
+			return err
+		}
+		if ownerRole != "it_team" && ownerRole != "super_admin" {
+			return fmt.Errorf("%s must be an IT owner", label)
+		}
+		return nil
+	}
+	if ownerID != "" {
+		if err := validateOwnerMember(ownerID, "primary owner"); err != nil {
+			httpx.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if backupOwnerID != "" {
+		if err := validateOwnerMember(backupOwnerID, "backup owner"); err != nil {
+			httpx.Error(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if ownerID != "" && backupOwnerID != "" && ownerID == backupOwnerID {
+		httpx.Error(c, http.StatusBadRequest, "backup owner must be different from the primary owner")
+		return
+	}
+	assignments := make([]string, 0, 2)
+	args := []any{channelID}
+	if input.OwnerID != nil {
+		assignments = append(assignments, fmt.Sprintf("primary_owner_id = NULLIF($%d, '')::uuid", len(args)+1))
+		args = append(args, ownerID)
+	}
+	if input.BackupOwnerID != nil {
+		assignments = append(assignments, fmt.Sprintf("backup_owner_id = NULLIF($%d, '')::uuid", len(args)+1))
+		args = append(args, backupOwnerID)
+	}
+	result, err := server.db.Exec(fmt.Sprintf("UPDATE chat_channels SET %s WHERE id = $1::uuid", strings.Join(assignments, ", ")), args...)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rowsAffected == 0 {
+		httpx.Error(c, http.StatusNotFound, "chat channel not found")
+		return
+	}
+	auditDetail := gin.H{}
+	response := gin.H{}
+	if input.OwnerID != nil {
+		auditDetail["ownerId"] = emptyToNullString(ownerID)
+		response["ownerId"] = emptyToNullString(ownerID)
+	}
+	if input.BackupOwnerID != nil {
+		auditDetail["backupOwnerId"] = emptyToNullString(backupOwnerID)
+		response["backupOwnerId"] = emptyToNullString(backupOwnerID)
+	}
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_owner_updated", TargetType: "chat_channel", TargetID: channelID, Detail: auditDetail})
+	httpx.JSON(c, http.StatusOK, response)
+}
+
+func (server *apiServer) nextSupportTicketNumber(tx *sql.Tx) (string, error) {
+	var ticketNumber string
+	err := tx.QueryRow(`SELECT 'TKT-' || LPAD(nextval('support_ticket_number_seq')::text, 6, '0')`).Scan(&ticketNumber)
+	return ticketNumber, err
+}
+
+func (server *apiServer) ensureClosedChatTicket(tx *sql.Tx, channelID string) (string, string, error) {
+	var linkedRequestID, channelName, primaryOwnerID string
+	var createdByID sql.NullString
+	err := tx.QueryRow(`
+		SELECT COALESCE(linked_request_id::text, ''), name, COALESCE(primary_owner_id::text, ''), created_by::text
+		FROM chat_channels
+		WHERE id = $1::uuid
+	`, channelID).Scan(&linkedRequestID, &channelName, &primaryOwnerID, &createdByID)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(linkedRequestID) != "" {
+		var ticketNumber string
+		if err := tx.QueryRow(`SELECT COALESCE(ticket_number, '') FROM requests WHERE id = $1::uuid`, linkedRequestID).Scan(&ticketNumber); err != nil {
+			return "", "", err
+		}
+		return linkedRequestID, strings.TrimSpace(ticketNumber), nil
+	}
+	requesterID := strings.TrimSpace(createdByID.String)
+	if requesterID == "" {
+		err = tx.QueryRow(`
+			SELECT cm.user_id::text
+			FROM chat_members cm
+			JOIN users u ON u.id = cm.user_id
+			JOIN roles r ON r.id = u.role_id
+			WHERE cm.channel_id = $1::uuid AND r.name = 'employee'
+			ORDER BY cm.created_at ASC
+			LIMIT 1
+		`, channelID).Scan(&requesterID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				requesterID = strings.TrimSpace(createdByID.String)
+			} else {
+				return "", "", err
+			}
+		}
+	}
+	if requesterID == "" {
+		return "", "", errors.New("chat requester not found")
+	}
+	ticketNumber, err := server.nextSupportTicketNumber(tx)
+	if err != nil {
+		return "", "", err
+	}
+	var requestID string
+	requestStatus := "pending"
+	if strings.TrimSpace(primaryOwnerID) != "" {
+		requestStatus = "in_progress"
+	}
+	if err := tx.QueryRow(`
+		INSERT INTO requests (requester_id, assignee_id, type, title, description, status, notes, ticket_number, source_chat_id, reference_key)
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, 'support_chat', $3, $4, $5, $6, $7, $8::uuid, $9)
+		RETURNING id
+	`, requesterID, strings.TrimSpace(primaryOwnerID), "Chat Ticket: "+strings.TrimSpace(channelName), "Auto-created from a closed support chat conversation.", requestStatus, "Converted from chat closure.", ticketNumber, channelID, "chat:"+channelID).Scan(&requestID); err != nil {
+		return "", "", err
+	}
+	if _, err := tx.Exec(`UPDATE chat_channels SET linked_request_id = $2::uuid WHERE id = $1::uuid`, channelID, requestID); err != nil {
+		return "", "", err
+	}
+	return requestID, ticketNumber, nil
+}
+
+func (server *apiServer) closeChatChannel(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin", "it_team") {
+		return
+	}
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	channelID := strings.TrimSpace(c.Param("id"))
+	if claims.Role == "it_team" {
+		allowed, err := server.userIsChatMember(c.Request.Context(), channelID, claims.UserID)
+		if err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !allowed {
+			httpx.Error(c, http.StatusForbidden, "only chat members or super admin can close chats")
+			return
+		}
+	}
+	tx, err := server.db.Begin()
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+	var status string
+	if err := tx.QueryRow(`SELECT status FROM chat_channels WHERE id = $1::uuid`, channelID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "chat channel not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if status == "closed" {
+		httpx.Error(c, http.StatusBadRequest, "chat is already closed")
+		return
+	}
+	requestID, ticketNumber, err := server.ensureClosedChatTicket(tx, channelID)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec(`UPDATE chat_channels SET status = 'closed', closed_at = NOW(), closed_by = $2::uuid WHERE id = $1::uuid`, channelID, claims.UserID); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	actorName := strings.TrimSpace(claims.Name)
+	if actorName == "" {
+		actorName = strings.TrimSpace(claims.Email)
+	}
+	if _, err := tx.Exec(`INSERT INTO request_comments (request_id, author_id, note) VALUES ($1::uuid, $2::uuid, $3)`, requestID, claims.UserID, "Chat closed by "+actorName+". Follow-up continues under ticket "+ticketNumber+"."); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	server.chat.publish(channelID, chatEnvelope{Type: "channel_closed", ChannelID: channelID, Status: "closed", TicketID: requestID, TicketNumber: ticketNumber, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_closed", TargetType: "chat_channel", TargetID: channelID, Detail: gin.H{"ticketId": requestID, "ticketNumber": ticketNumber}})
+	httpx.JSON(c, http.StatusOK, gin.H{"status": "closed", "ticketId": requestID, "ticketNumber": ticketNumber})
+}
+
+func (server *apiServer) reopenChatChannel(c *gin.Context) {
+	claims := middleware.CurrentClaims(c)
+	if claims == nil {
+		httpx.Error(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	channelID := strings.TrimSpace(c.Param("id"))
+	allowed, err := server.userIsChatMember(c.Request.Context(), channelID, claims.UserID)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !allowed {
+		httpx.Error(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	if claims.Role != "employee" && claims.Role != "super_admin" && claims.Role != "it_team" {
+		httpx.Error(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	var status string
+	var linkedRequestID sql.NullString
+	err = server.db.QueryRow(`SELECT status, linked_request_id::text FROM chat_channels WHERE id = $1::uuid`, channelID).Scan(&status, &linkedRequestID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpx.Error(c, http.StatusNotFound, "chat channel not found")
+			return
+		}
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if status != "closed" {
+		httpx.Error(c, http.StatusBadRequest, "chat is already open")
+		return
+	}
+	tx, err := server.db.Begin()
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE chat_channels SET status = 'open', closed_at = NULL, closed_by = NULL WHERE id = $1::uuid`, channelID); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if linkedRequestID.Valid && strings.TrimSpace(linkedRequestID.String) != "" {
+		var assigneeID sql.NullString
+		if err := tx.QueryRow(`SELECT assignee_id::text FROM requests WHERE id = $1::uuid`, linkedRequestID.String).Scan(&assigneeID); err == nil {
+			requestStatus := "pending"
+			if strings.TrimSpace(assigneeID.String) != "" {
+				requestStatus = "in_progress"
+			}
+			if _, err := tx.Exec(`UPDATE requests SET status = $2, updated_at = NOW() WHERE id = $1::uuid`, linkedRequestID.String, requestStatus); err != nil {
+				httpx.Error(c, http.StatusInternalServerError, err.Error())
+				return
+			}
+			actorName := strings.TrimSpace(claims.Name)
+			if actorName == "" {
+				actorName = strings.TrimSpace(claims.Email)
+			}
+			if _, err := tx.Exec(`INSERT INTO request_comments (request_id, author_id, note) VALUES ($1::uuid, $2::uuid, $3)`, linkedRequestID.String, claims.UserID, "Chat reopened by "+actorName+"."); err != nil {
+				httpx.Error(c, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	server.chat.publish(channelID, chatEnvelope{Type: "channel_reopened", ChannelID: channelID, Status: "open", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	middleware.TagAudit(c, middleware.AuditMeta{Action: "chat_channel_reopened", TargetType: "chat_channel", TargetID: channelID})
+	httpx.JSON(c, http.StatusOK, gin.H{"status": "open", "ticketId": emptyToNullString(linkedRequestID.String)})
+}
+
+func (server *apiServer) listChatTicketSummary(c *gin.Context) {
+	if !server.requireRoles(c, "super_admin") {
+		return
+	}
+	rows, err := server.db.Query(`
+		SELECT u.id, u.full_name,
+			COUNT(r.id) FILTER (WHERE r.source_chat_id IS NOT NULL),
+			COUNT(r.id) FILTER (WHERE r.source_chat_id IS NOT NULL AND r.status IN ('pending', 'in_progress')),
+			COUNT(r.id) FILTER (WHERE r.source_chat_id IS NOT NULL AND r.status = 'resolved')
+		FROM users u
+		JOIN roles role ON role.id = u.role_id
+		LEFT JOIN requests r ON r.assignee_id = u.id
+		WHERE u.is_active = TRUE AND role.name IN ('it_team', 'super_admin')
+		GROUP BY u.id, u.full_name
+		ORDER BY COUNT(r.id) FILTER (WHERE r.source_chat_id IS NOT NULL) DESC, u.full_name ASC
+	`)
+	if err != nil {
+		httpx.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	items := make([]gin.H, 0)
+	for rows.Next() {
+		var id, fullName string
+		var total, openCount, resolved int
+		if err := rows.Scan(&id, &fullName, &total, &openCount, &resolved); err != nil {
+			httpx.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		items = append(items, gin.H{"id": id, "fullName": fullName, "total": total, "open": openCount, "resolved": resolved})
+	}
+	httpx.JSON(c, http.StatusOK, gin.H{"items": items})
 }
 
 func (server *apiServer) deleteChatChannel(c *gin.Context) {
@@ -1841,8 +2729,10 @@ func (server *apiServer) chatWebsocket(c *gin.Context) {
 	}()
 
 	type incomingMessage struct {
+		Type      string `json:"type"`
 		ChannelID string `json:"channelId"`
 		Body      string `json:"body"`
+		Typing    bool   `json:"typing"`
 	}
 
 	for {
@@ -1850,8 +2740,30 @@ func (server *apiServer) chatWebsocket(c *gin.Context) {
 		if err := conn.ReadJSON(&input); err != nil {
 			return
 		}
+		if strings.TrimSpace(input.ChannelID) != channelID {
+			continue
+		}
+		if strings.TrimSpace(input.Type) == "typing" {
+			server.chat.publish(channelID, chatEnvelope{
+				Type:       "typing",
+				ChannelID:  channelID,
+				AuthorID:   claims.UserID,
+				AuthorName: claims.Name,
+				Typing:     input.Typing,
+				CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+			})
+			continue
+		}
 		body := strings.TrimSpace(input.Body)
-		if body == "" || len(body) > 4000 || strings.TrimSpace(input.ChannelID) != channelID {
+		if body == "" || len(body) > 4000 {
+			continue
+		}
+		var channelStatus string
+		if err := server.db.QueryRow(`SELECT status FROM chat_channels WHERE id = $1::uuid`, channelID).Scan(&channelStatus); err != nil {
+			continue
+		}
+		if channelStatus == "closed" {
+			_ = conn.WriteJSON(chatEnvelope{Type: "channel_closed", ChannelID: channelID, Status: "closed", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 			continue
 		}
 		var messageID string
@@ -1870,6 +2782,7 @@ func (server *apiServer) chatWebsocket(c *gin.Context) {
 			AuthorID:   claims.UserID,
 			AuthorName: claims.Name,
 			Body:       body,
+			Typing:     false,
 			CreatedAt:  createdAt.Format(time.RFC3339Nano),
 		}
 		server.chat.publish(channelID, envelope)
@@ -1886,6 +2799,13 @@ func (server *apiServer) ensureChatChannelsForUser(claims *authn.Claims) error {
 			return err
 		}
 		if existing {
+			return nil
+		}
+		enabled, err := server.chatAutoCreateEnabled()
+		if err != nil {
+			return err
+		}
+		if enabled {
 			return nil
 		}
 		return server.createSupportChannelForEmployee(claims)
@@ -1912,35 +2832,16 @@ func (server *apiServer) createOperationsChannel(createdBy string) error {
 
 	var channelID string
 	if err := tx.QueryRow(`
-		INSERT INTO chat_channels (name, kind, created_by)
-		VALUES ('IT Operations', 'operations', $1::uuid)
+		INSERT INTO chat_channels (name, kind, created_by, primary_owner_id)
+		VALUES ('IT Operations', 'operations', $1::uuid, $1::uuid)
 		RETURNING id
 	`, createdBy).Scan(&channelID); err != nil {
 		return err
 	}
-	rows, err := tx.Query(`
-		SELECT u.id
-		FROM users u
-		JOIN roles r ON r.id = u.role_id
-		WHERE u.is_active = TRUE AND r.name IN ('super_admin', 'it_team')
-	`)
+	memberIDs, err := server.configuredChatOwnerIDs()
 	if err != nil {
 		return err
 	}
-	memberIDs := make([]string, 0)
-	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
-			rows.Close()
-			return err
-		}
-		memberIDs = append(memberIDs, userID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
 	for _, userID := range memberIDs {
 		if _, err := tx.Exec(`INSERT INTO chat_members (channel_id, user_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, channelID, userID); err != nil {
 			return err
@@ -1960,40 +2861,27 @@ func (server *apiServer) createSupportChannelForEmployee(claims *authn.Claims) e
 	if strings.TrimSpace(claims.Name) != "" {
 		channelName = "Support - " + strings.TrimSpace(claims.Name)
 	}
+	primaryOwnerID := ""
+	memberIDs, err := server.configuredChatOwnerIDs()
+	if err != nil {
+		return err
+	}
+	for _, userID := range memberIDs {
+		if primaryOwnerID == "" {
+			primaryOwnerID = userID
+		}
+	}
 	var channelID string
 	if err := tx.QueryRow(`
-		INSERT INTO chat_channels (name, kind, created_by)
-		VALUES ($1, 'support', $2::uuid)
+		INSERT INTO chat_channels (name, kind, created_by, primary_owner_id)
+		VALUES ($1, 'support', $2::uuid, NULLIF($3, '')::uuid)
 		RETURNING id
-	`, channelName, claims.UserID).Scan(&channelID); err != nil {
+	`, channelName, claims.UserID, primaryOwnerID).Scan(&channelID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO chat_members (channel_id, user_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, channelID, claims.UserID); err != nil {
 		return err
 	}
-	rows, err := tx.Query(`
-		SELECT u.id
-		FROM users u
-		JOIN roles r ON r.id = u.role_id
-		WHERE u.is_active = TRUE AND r.name IN ('super_admin', 'it_team')
-	`)
-	if err != nil {
-		return err
-	}
-	memberIDs := make([]string, 0)
-	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
-			rows.Close()
-			return err
-		}
-		memberIDs = append(memberIDs, userID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
 	for _, userID := range memberIDs {
 		if _, err := tx.Exec(`INSERT INTO chat_members (channel_id, user_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, channelID, userID); err != nil {
 			return err
