@@ -71,6 +71,22 @@ type Payload struct {
 
 type Asset = sourceAsset
 
+type SecurityReport struct {
+	Source            string   `json:"source"`
+	Status            string   `json:"status"`
+	Severity          string   `json:"severity"`
+	Title             string   `json:"title"`
+	Summary           string   `json:"summary"`
+	Detail            string   `json:"detail"`
+	ScannedAt         string   `json:"scanned_at"`
+	ScannedPaths      []string `json:"scanned_paths,omitempty"`
+	ArtifactFiles     []string `json:"artifact_files,omitempty"`
+	InfectedFiles     []string `json:"infected_files,omitempty"`
+	ScannedFileCount  int      `json:"scanned_file_count,omitempty"`
+	InfectedFileCount int      `json:"infected_file_count,omitempty"`
+	ErrorCount        int      `json:"error_count,omitempty"`
+}
+
 type sourceAsset struct {
 	AssetTag          string           `json:"asset_tag"`
 	Name              string           `json:"name"`
@@ -98,6 +114,7 @@ type sourceAsset struct {
 	Notes             string           `json:"notes"`
 	ComputeDetails    *computeDetails  `json:"compute_details"`
 	InstalledSoftware []softwareRecord `json:"installed_software"`
+	SecurityReports   []SecurityReport `json:"security_reports"`
 }
 
 type computeDetails struct {
@@ -793,7 +810,7 @@ func (service *Service) upsertAsset(ctx context.Context, tx *sql.Tx, asset sourc
 				glpi_id = NULLIF($18, 0),
 				source_fingerprint = NULLIF($19, ''),
 				salt_minion_id = NULLIF($20, ''),
-				wazuh_agent_id = NULLIF($21, ''),
+				wazuh_agent_id = COALESCE(NULLIF($21, ''), wazuh_agent_id),
 				notes = NULLIF($22, ''),
 				updated_at = NOW()
 			WHERE id = $1::uuid
@@ -829,7 +846,7 @@ func (service *Service) upsertAsset(ctx context.Context, tx *sql.Tx, asset sourc
 			glpi_id = COALESCE(EXCLUDED.glpi_id, assets.glpi_id),
 			source_fingerprint = COALESCE(EXCLUDED.source_fingerprint, assets.source_fingerprint),
 			salt_minion_id = EXCLUDED.salt_minion_id,
-			wazuh_agent_id = EXCLUDED.wazuh_agent_id,
+			wazuh_agent_id = COALESCE(EXCLUDED.wazuh_agent_id, assets.wazuh_agent_id),
 			notes = COALESCE(EXCLUDED.notes, assets.notes),
 			updated_at = NOW()
 		RETURNING id
