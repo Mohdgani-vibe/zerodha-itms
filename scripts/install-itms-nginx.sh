@@ -93,6 +93,6 @@ echo "Enabling and restarting nginx..."
 	run_privileged systemctl restart nginx
 
 echo
-echo "ITMS frontend is now served by nginx at http://$SERVER_NAME/"
+echo "ITMS frontend is now served by nginx at http://$SERVER_NAME/login"
 echo "nginx web root: $WWW_ROOT"
 echo "backend upstream: $BACKEND_UPSTREAM"
